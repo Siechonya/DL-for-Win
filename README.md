@@ -28,13 +28,13 @@ Deep learning framework for plasma physics structure classification. A BiAutoenc
 
 | Class | Description |
 |---|---|
-| `sheet` | Current sheet / Alfvénic structure |
-| `vortex chain` | Chain of magnetic vortices |
-| `c vortex` | Compressible vortex |
-| `l vortex` | Line vortex / linear structure |
-| `hole` | Magnetic hole / dip region |
-| `soliton` | Solitary wave |
-| `shock` | Shock front / compressible jump |
+| `sheet` | Current sheet |
+| `vortex chain` | Chain of magnetic vortices (Circular only) |
+| `c vortex` | Circular polarized vortex |
+| `l vortex` | Linear polarized vortex |
+| `hole` | Magnetic hole |
+| `soliton` | Magnetic soliton |
+| `shock` | Strong jump |
 
 ## Usage
 
@@ -45,7 +45,7 @@ predictor = PhysicalPredictor(
     model_path='bi_model.pth',
     proto_emb_path='proto_emb.npy',
     thresholds_path='thresholds.npy',
-    target_pts=300,
+    target_pts_path='target_pts.npy',
 )
 
 df = pd.read_parquet('your_data.parquet')
@@ -56,7 +56,7 @@ print(f"Prediction: {label} (distance: {distance:.4f})")
 
 ## Requirements
 
-- Python 3.8+
+- Python 3.12+
 - PyTorch
 - pandas, numpy
 - pyarrow (for parquet I/O)
