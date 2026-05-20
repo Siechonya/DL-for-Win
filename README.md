@@ -38,9 +38,9 @@ Deep learning framework for plasma physics structure classification. A BiAutoenc
 
 ## Usage
 
-```python
-from prediction_for_arbitrary_df import PhysicalPredictor
+Open `src/prediction_for_arbitrary_df.ipynb`, run all cells (this defines the model and `PhysicalPredictor` class), then classify as needed:
 
+```python
 predictor = PhysicalPredictor(
     model_path='bi_model.pth',
     proto_emb_path='proto_emb.npy',
