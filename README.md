@@ -6,10 +6,9 @@ Deep learning framework for plasma physics structure classification. A BiAutoenc
 
 ```
 ├── src/
-│   ├── train_20240101-0130.ipynb       # Model training pipeline
+│   ├── train_20240101-0130.ipynb          # Model training pipeline
 │   ├── prediction_for_arbitrary_df.ipynb  # Inference on arbitrary data
-│   ├── clean_sample.ipynb               # Sample data preprocessing
-│   └── temp.py                          # Core module (model, loss, training loop)
+│   └── clean_sample.ipynb                 # Sample data preprocessing
 ├── samples/                             # Labeled prototype waveforms
 ├── samples_clean/                       # Cleaned prototype waveforms
 ├── bi_model.pth                         # Trained model weights
@@ -40,12 +39,19 @@ Deep learning framework for plasma physics structure classification. A BiAutoenc
 ## Usage
 
 ```python
-# Load model and classify new data
-model = BiAutoencoder(input_size=4, cnn_channels=16, hidden_size=128, num_layers=2, latent_dim=64)
-model.load_state_dict(torch.load('bi_model.pth'))
-model.to(device)
+from prediction_for_arbitrary_df import PhysicalPredictor
 
-predictions, proto_embeddings = test_clustering(model, test_data, prototypes, device)
+predictor = PhysicalPredictor(
+    model_path='bi_model.pth',
+    proto_emb_path='proto_emb.npy',
+    thresholds_path='thresholds.npy',
+    target_pts=300,
+)
+
+df = pd.read_parquet('your_data.parquet')
+label, distance, details, is_neither = predictor.predict(df)
+
+print(f"Prediction: {label} (distance: {distance:.4f})")
 ```
 
 ## Requirements
