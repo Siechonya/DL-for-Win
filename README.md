@@ -6,9 +6,10 @@ Deep learning framework for plasma physics structure classification. A BiAutoenc
 
 ```
 ├── src/
-│   ├── train_20240101-0130.ipynb          # Model training pipeline
-│   ├── prediction_for_arbitrary_df.ipynb  # Inference on arbitrary data
-│   └── clean_sample.ipynb                 # Sample data preprocessing
+│   ├── train_20240101-0130.ipynb           # Training pipeline (Euclidean distance)
+│   ├── train_20240101-0130_cosine.ipynb    # Training pipeline (cosine distance variant)
+│   ├── prediction_for_arbitrary_df.ipynb   # Inference on arbitrary data
+│   └── clean_sample.ipynb                  # Sample data preprocessing
 ├── samples/                             # Labeled prototype waveforms
 ├── samples_clean/                       # Cleaned prototype waveforms
 ├── bi_model.pth                         # Trained model weights
@@ -35,6 +36,7 @@ Deep learning framework for plasma physics structure classification. A BiAutoenc
 | `hole` | Magnetic hole |
 | `soliton` | Magnetic soliton |
 | `shock` | Strong jump |
+| `alfen dis` | Alfvén discontinuity |
 
 ## Usage
 
