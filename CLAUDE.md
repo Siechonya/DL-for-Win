@@ -10,6 +10,8 @@ Plasma physics coherent structure classification using a BiAutoencoder (1D-CNN +
 
 All code lives in Jupyter notebooks. There is no `setup.py`, `requirements.txt`, build step, or test suite. Notebooks must be run in order (cells depend on prior cells). Notebooks **cannot** be imported as modules — code reuse is done by copying cells or running the full notebook.
 
+**Jupytext pairing**: Every `.ipynb` has a synced `.py` file in `percent` format (`# %%` cell separators). VS Code Jupytext extension auto-syncs on save. **Prefer reading/editing `.py` files** — they are plain Python, avoiding JSON escaping bugs. After editing `.py`, jupytext auto-updates `.ipynb` (or run `jupytext --sync <file>` manually).
+
 ## Key notebooks
 
 - **`src/train_20240101-0130.ipynb`** — Main training pipeline (Euclidean distance). Defines `load_data`, model, loss functions, `test_clustering`, training loop, t-SNE, and all visualization cells. Run top-to-bottom.
