@@ -186,8 +186,6 @@ class PrototypeDataset(Dataset):
 
 
 # %%
-import torch
-
 def extract_physical_features_batch(data_batch, device):
     # data_batch: [N, 300, 4]
     B = data_batch[:, :, 0]
@@ -233,7 +231,7 @@ def extract_physical_features_batch(data_batch, device):
     # A. 阿尔芬结构专属判据 (保留 mask_alfven 门控)
     # =========================================================================
     
-    # (2) 极化比: max(|b_min|) / max(|b_max|)
+    # (0) 极化比: max(|b_min|) / max(|b_max|)
     max_abs_bmin = torch.max(torch.abs(bmin), dim=1)[0]
     max_abs_bmax = torch.max(torch.abs(bmax), dim=1)[0]
     raw_pol_ratio = max_abs_bmin / (max_abs_bmax + 1e-6)
@@ -259,7 +257,6 @@ def extract_physical_features_batch(data_batch, device):
     corr_bmax_bmin = torch.where(condition_corr, raw_corr_bmax_bmin, torch.zeros_like(raw_corr_bmax_bmin))
     
     # (5) b_max 的自相关相位
-    import torch.nn.functional as F
     def get_generalized_freq(x, device):
         N = x.size(1)
         # 1. 去均值标准化
@@ -293,7 +290,7 @@ def extract_physical_features_batch(data_batch, device):
     dom_freq = torch.where(mask_alfven, dom_freq, torch.zeros_like(dom_freq))
 
     
-    # (9) B最小时，dot_bmax 凸起的程度和 b_max 的大小
+    # (8,9) B最小时，dot_bmax 凸起的程度和 b_max 的大小
     def calc_sheet_reversal_criterion(B_full, b_max, search_range=100):
         """
         B_full: [Batch, Length] - 总磁场强度 B
@@ -363,7 +360,7 @@ def extract_physical_features_batch(data_batch, device):
     b_max_flipscore = calc_sheet_reversal_criterion(B, bmax, search_range=100)
     b_max_flipscore = torch.where(mask_alfven, b_max_flipscore, torch.zeros_like(b_max_flipscore))
 
-    # （16）b_max梯度的偏度
+    # (17) b_max梯度的偏度
     diff_bmax = bmax[:, 1:] - bmax[:, :-1]
     abs_skew_grad_bmax = get_abs_skewness(diff_bmax)
     abs_skew_grad_bmax = torch.where(mask_alfven, abs_skew_grad_bmax, torch.zeros_like(abs_skew_grad_bmax))
@@ -383,7 +380,7 @@ def extract_physical_features_batch(data_batch, device):
     # (6) 激波指标: b_z 斜率(差分)绝对值的最大值
     max_grad_bz = torch.max(torch.abs(bz[:, 1:] - bz[:, :-1]), dim=1)[0]
 
-    # (8) 激波判据：b_z最大值的绝对值减最小值的绝对值
+    # (7) 激波判据：b_z最大值的绝对值减最小值的绝对值
     b_z_max_ = torch.max(bz, dim=1)[0]
     b_z_min_ = torch.min(bz, dim=1)[0]
     R_jump = torch.abs(b_z_max_) - torch.abs(b_z_min_) # 接近0：shock；接近1：soliton；接近-1：hole
@@ -396,13 +393,13 @@ def extract_physical_features_batch(data_batch, device):
     kurt_dot_B = torch.where(mask_comp, kurt_dot_B, torch.zeros_like(kurt_dot_B))
 
 
-    # (12) dot_bz 的全局峰度 (Kurtosis)
+    # (11) dot_bz 的全局峰度 (Kurtosis)
     mean_dot_bz = torch.mean(dot_bz, dim=1, keepdim=True)
     std_dot_bz = torch.std(dot_bz, dim=1, keepdim=True)
     kurt_dot_bz = torch.mean(((dot_bz - mean_dot_bz) / (std_dot_bz + 1e-6))**4, dim=1) / 10.0
     kurt_dot_bz = torch.where(mask_comp, kurt_dot_bz, torch.zeros_like(kurt_dot_bz))
 
-    # (13) b_z和b_max穿过 ±0.5 的次数 (反映震荡结构的复杂程度)
+    # (12,13) b_z和b_max穿过 ±0.5 的次数 (反映震荡结构的复杂程度)
     def calc_criterion_16(bz, threshold=0.5):
         """
         bz: [Batch, Length] 的张量
@@ -554,16 +551,9 @@ def calc_invariant_mse(pred, target, max_shift=50):
 
 
 # %%
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import itertools
-from tqdm import tqdm
-import copy
-import numpy as np
 
-def train_autoencoder(model, train_dataloader, val_dataloader, proto_dataloader, device, 
-                      epochs=100, lr=0.001, patience=10, best_model_path=None, 
+def train_autoencoder(model, train_dataloader, val_dataloader, proto_dataloader, device,
+                      epochs=100, lr=0.001, patience=10, best_model_path=None,
                       max_lambda_contrastive=0.1, step_lambda_contrastive=0.01, start_lambda_contrastive=0.0, max_shift=20):
     
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
@@ -806,15 +796,14 @@ plt.grid(True, linestyle='--', alpha=0.7)
 all_train_loss_array = np.array(all_train_loss_list)
 all_val_loss_array = np.array(all_val_loss_list)
 
-mask = np.arange(len(all_train_loss_array[0])) >= 0
 fig = plt.figure(figsize=(8, 4))
-all_train_mse_loss = np.sum([all_train_loss_array[i][mask] for i in range(4)], axis=0)
+all_train_mse_loss = np.sum([all_train_loss_array[i] for i in range(4)], axis=0)
 plt.plot(all_train_mse_loss, label='Train Loss MSE')
-plt.plot(all_train_loss_array[0][mask], label='Train Loss B')
-plt.plot(all_train_loss_array[1][mask], label='Train Loss b_z')
-plt.plot(all_train_loss_array[2][mask], label='Train Loss b_max')
-plt.plot(all_train_loss_array[3][mask], label='Train Loss b_min')
-plt.plot(all_train_loss_array[4][mask], label='Train Loss Contrastive')
+plt.plot(all_train_loss_array[0], label='Train Loss B')
+plt.plot(all_train_loss_array[1], label='Train Loss b_z')
+plt.plot(all_train_loss_array[2], label='Train Loss b_max')
+plt.plot(all_train_loss_array[3], label='Train Loss b_min')
+plt.plot(all_train_loss_array[4], label='Train Loss Contrastive')
 plt.xlabel('Epoch')
 plt.ylabel('Loss')
 plt.title('Training Loss')
@@ -823,13 +812,13 @@ plt.grid(True, linestyle='--', alpha=0.7)
 
 
 fig = plt.figure(figsize=(8, 4))
-all_val_mse_loss = np.sum([all_val_loss_array[i][mask] for i in range(4)], axis=0)
+all_val_mse_loss = np.sum([all_val_loss_array[i] for i in range(4)], axis=0)
 plt.plot(all_val_mse_loss, label='Validation Loss MSE')
-plt.plot(all_val_loss_array[0][mask], label='Validation Loss B')
-plt.plot(all_val_loss_array[1][mask], label='Validation Loss b_z')
-plt.plot(all_val_loss_array[2][mask], label='Validation Loss b_max')
-plt.plot(all_val_loss_array[3][mask], label='Validation Loss b_min')
-plt.plot(all_val_loss_array[4][mask], label='Validation Loss Contrastive')
+plt.plot(all_val_loss_array[0], label='Validation Loss B')
+plt.plot(all_val_loss_array[1], label='Validation Loss b_z')
+plt.plot(all_val_loss_array[2], label='Validation Loss b_max')
+plt.plot(all_val_loss_array[3], label='Validation Loss b_min')
+plt.plot(all_val_loss_array[4], label='Validation Loss Contrastive')
 plt.xlabel('Epoch')
 plt.ylabel('Loss')
 plt.title('Validation Loss')
