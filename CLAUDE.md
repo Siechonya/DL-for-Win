@@ -92,9 +92,11 @@ The contrastive loss (`physical_contrastive_loss` in cell `e54b11c5`) is a plain
    - **Verification**: After editing, check `repr(src)` for `\\\\n` (four chars in repr = two chars in actual source = correct). If you see a real line break inside a string literal, the escaping was wrong.
    - **Golden rule**: `json.dump()` handles escaping automatically from Python string → JSON. Feed it the string you want to appear in the source, with literal `\` and `n` as separate characters (i.e. `\\n` in your Python script). Never try to construct JSON escape sequences by hand.
 
-4. **When things go wrong**: `git checkout -- <file>` to restore from the last commit. The repo is at commit `82d43c1` ("update") pushed to remote. All local uncommitted changes are experimental.
+4. **When things go wrong**: `git checkout -- <file>` to restore from the last commit. The repo is at commit `9b04daa` ("Cleanup") pushed to remote. All local uncommitted changes are experimental.
 
-5. **Surgical editing pattern** (preferred over NotebookEdit):
+5. **`.py` editing — NEVER `replace_all` on trivial strings**: After jupytext pairing, prefer editing `.py` files. But `.py` files use `# %%` as cell separators — these are critical markers that jupytext uses to split cells. NEVER do `replace_all: true` with trivial strings like `[]`, `:`, `#`, or short variable names — they appear in hundreds of innocuous locations and will corrupt the entire file. Always use context-rich, unique `old_string` patterns (at least 2-3 lines, with surrounding code) and keep `replace_all: false` unless you are absolutely certain the match only occurs in the intended locations.
+
+6. **Surgical editing pattern** (preferred over NotebookEdit):
 ```python
 import json
 with open(nb_path, 'r', encoding='utf-8') as f:
