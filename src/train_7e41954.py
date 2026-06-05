@@ -1,7 +1,6 @@
 # ---
 # jupyter:
 #   jupytext:
-#     formats: ipynb,py:percent
 #     text_representation:
 #       extension: .py
 #       format_name: percent
@@ -147,16 +146,17 @@ class BiAutoencoder(nn.Module):
         latent_z = self.fc_reduce(pooled_concat) # [batch, 64]
         return latent_z
 
-    def forward(self, x, return_embedding=False):
+    def forward(self, x):
         seq_len = x.size(1)
-
-        latent_z = self.encode(x)  # [batch, 64]
-        z_rep = latent_z.unsqueeze(1).repeat(1, seq_len, 1)  # [batch, 300, 64]
-        dec_out, _ = self.decoder_lstm(z_rep)  # [batch, 300, 256]
-        reconstructed = self.decoder_fc(dec_out)  # [batch, 300, 4]
-
-        if return_embedding:
-            return reconstructed, latent_z
+        
+        # 编码获取低维物理流形
+        latent_z = self.encode(x) # [batch, 64]
+        # 沿时间维度复制隐变量，给解码器提供全局上下文
+        z_rep = latent_z.unsqueeze(1).repeat(1, seq_len, 1) # [batch, 300, 64]
+        # 解码并重构
+        dec_out, _ = self.decoder_lstm(z_rep) # [batch, 300, 256]
+        reconstructed = self.decoder_fc(dec_out) # [batch, 300, 4]
+        
         return reconstructed
 
 
@@ -185,6 +185,8 @@ class PrototypeDataset(Dataset):
 
 
 # %%
+import torch
+
 def extract_physical_features_batch(data_batch, device):
     # data_batch: [N, 300, 4]
     B = data_batch[:, :, 0]
@@ -214,9 +216,9 @@ def extract_physical_features_batch(data_batch, device):
     bperp_sq_max = torch.max(bmax**2 + bmin**2, dim=1)[0]
     comp_index = torch.sqrt(bz_sq_max / (bperp_sq_max + 1e-6))
     
-    # 定义物理门控掩码 (阿尔芬结构的软门控 + 压缩性结构的软门控)，中间压缩性的所有特征都要激活
-    mask_alfven = comp_index < 1.5       # 阿尔芬结构门控
-    mask_comp = comp_index > 0.50    # 压缩性结构门控
+    # 定义物理门控掩码 (仅保留阿尔芬结构的硬门控)
+    mask_alfven = comp_index < 1.0     # 阿尔芬结构门控
+    mask_comp = comp_index > 0.5     # 压缩性结构门控
 
     def get_abs_skewness(x):
         """计算序列的绝对偏度：E[(x-mu)^3] / sigma^3"""
@@ -227,10 +229,10 @@ def extract_physical_features_batch(data_batch, device):
         return torch.abs(skew)
 
     # =========================================================================
-    # A. 阿尔芬结构判据
+    # A. 阿尔芬结构专属判据 (保留 mask_alfven 门控)
     # =========================================================================
     
-    # (0) 极化比: max(|b_min|) / max(|b_max|)
+    # (2) 极化比: max(|b_min|) / max(|b_max|)
     max_abs_bmin = torch.max(torch.abs(bmin), dim=1)[0]
     max_abs_bmax = torch.max(torch.abs(bmax), dim=1)[0]
     raw_pol_ratio = max_abs_bmin / (max_abs_bmax + 1e-6)
@@ -256,6 +258,7 @@ def extract_physical_features_batch(data_batch, device):
     corr_bmax_bmin = torch.where(condition_corr, raw_corr_bmax_bmin, torch.zeros_like(raw_corr_bmax_bmin))
     
     # (5) b_max 的自相关相位
+    import torch.nn.functional as F
     def get_generalized_freq(x, device):
         N = x.size(1)
         # 1. 去均值标准化
@@ -289,7 +292,7 @@ def extract_physical_features_batch(data_batch, device):
     dom_freq = torch.where(mask_alfven, dom_freq, torch.zeros_like(dom_freq))
 
     
-    # (8,9) B最小时，dot_bmax 凸起的程度和 b_max 的大小
+    # (9) B最小时，dot_bmax 凸起的程度和 b_max 的大小
     def calc_sheet_reversal_criterion(B_full, b_max, search_range=100):
         """
         B_full: [Batch, Length] - 总磁场强度 B
@@ -359,29 +362,27 @@ def extract_physical_features_batch(data_batch, device):
     b_max_flipscore = calc_sheet_reversal_criterion(B, bmax, search_range=100)
     b_max_flipscore = torch.where(mask_alfven, b_max_flipscore, torch.zeros_like(b_max_flipscore))
 
-    # (17) b_max梯度的偏度
+    # （16）b_max梯度的偏度
     diff_bmax = bmax[:, 1:] - bmax[:, :-1]
     abs_skew_grad_bmax = get_abs_skewness(diff_bmax)
     abs_skew_grad_bmax = torch.where(mask_alfven, abs_skew_grad_bmax, torch.zeros_like(abs_skew_grad_bmax))
 
 
     # =========================================================================
-    # B. 压缩性结构判据
+    # B. 压缩性结构专属判据 (移除 mask_comp 硬截断，保留物理连续性)
     # =========================================================================
 
     # (3) b_z和B 扰动凹陷或凸起程度
     idx_max_bz = torch.argmax(torch.abs(bz), dim=1)
     bz_dip = bz[batch_indices, idx_max_bz]
-    bz_dip = torch.where(mask_comp, bz_dip, torch.zeros_like(bz_dip))
     idx_max_B = torch.argmax(torch.abs(B), dim=1)
     B_dip = B[batch_indices, idx_max_B]
     B_dip = torch.where(mask_comp, B_dip, torch.zeros_like(B_dip))
 
     # (6) 激波指标: b_z 斜率(差分)绝对值的最大值
     max_grad_bz = torch.max(torch.abs(bz[:, 1:] - bz[:, :-1]), dim=1)[0]
-    max_grad_bz = torch.where(mask_comp, max_grad_bz, torch.zeros_like(max_grad_bz))
 
-    # (7) 激波判据：b_z最大值的绝对值减最小值的绝对值
+    # (8) 激波判据：b_z最大值的绝对值减最小值的绝对值
     b_z_max_ = torch.max(bz, dim=1)[0]
     b_z_min_ = torch.min(bz, dim=1)[0]
     R_jump = torch.abs(b_z_max_) - torch.abs(b_z_min_) # 接近0：shock；接近1：soliton；接近-1：hole
@@ -393,14 +394,20 @@ def extract_physical_features_batch(data_batch, device):
     kurt_dot_B = torch.mean(((dot_B - mean_dot_B) / (std_dot_B + 1e-6))**4, dim=1) / 10.0
     kurt_dot_B = torch.where(mask_comp, kurt_dot_B, torch.zeros_like(kurt_dot_B))
 
+    # (11) 在 dot_bz 最大值附近 (±10个点) 的积分 (局部能量聚集度)
+    idx_max_dot_bz = torch.argmax(dot_bz, dim=1)
+    offsets = torch.arange(-10, 11, device=device).view(1, -1) # [1, 21]
+    window_idx_dot_bz = torch.clamp(idx_max_dot_bz.view(-1, 1) + offsets, 0, 299)
+    int_dot_bz_window = torch.gather(dot_bz, 1, window_idx_dot_bz).sum(dim=1)
+    int_dot_bz_window = torch.where(mask_comp, int_dot_bz_window, torch.zeros_like(int_dot_bz_window))
 
-    # (11) dot_bz 的全局峰度 (Kurtosis)
+    # (12) dot_bz 的全局峰度 (Kurtosis)
     mean_dot_bz = torch.mean(dot_bz, dim=1, keepdim=True)
     std_dot_bz = torch.std(dot_bz, dim=1, keepdim=True)
     kurt_dot_bz = torch.mean(((dot_bz - mean_dot_bz) / (std_dot_bz + 1e-6))**4, dim=1) / 10.0
     kurt_dot_bz = torch.where(mask_comp, kurt_dot_bz, torch.zeros_like(kurt_dot_bz))
 
-    # (12,13) b_z和b_max穿过 ±0.5 的次数 (反映震荡结构的复杂程度)
+    # (13) b_z和b_max穿过 ±0.5 的次数 (反映震荡结构的复杂程度)
     def calc_criterion_16(bz, threshold=0.5):
         """
         bz: [Batch, Length] 的张量
@@ -418,14 +425,12 @@ def extract_physical_features_batch(data_batch, device):
         score = torch.exp(-(complexity_index-1)**2 / 0.3 **2) # 距离标准值1越远，得分越低
         return score
     complexity_index_bz = calc_criterion_16(bz)
-    complexity_index_bz = torch.where(mask_comp, complexity_index_bz, torch.zeros_like(complexity_index_bz))
     complexity_index_bmax = calc_criterion_16(bmax)
-    complexity_index_bmax = torch.where(mask_alfven, complexity_index_bmax, torch.zeros_like(complexity_index_bmax))
 
     # (14) B 场与 tanh 模板的最大相关性
-    def get_max_corr_template(x, y_template, max_shift=50):
+    def get_max_corr_template(x, y_template):
         """
-        计算 batch x 与单个模板 y_template 之间的最大互相关性 (位移无关, 限制在 ±max_shift)
+        计算 batch x 与单个模板 y_template 之间的最大互相关性 (位移无关)
         """
         N_pts = x.size(1)
         # 模板扩展到 batch 大小
@@ -439,16 +444,12 @@ def extract_physical_features_batch(data_batch, device):
         cross_corr = torch.fft.irfft(corr_freq, n=pad_size, dim=1)
         x_energy = torch.sqrt(torch.sum(x_norm**2, dim=1) + 1e-8)
         y_energy = torch.sqrt(torch.sum(y_norm**2, dim=1) + 1e-8)
-        # 限制搜索范围为 ±max_shift，避免无关结构通过极端位移获得虚假高相关
-        pos_indices = torch.arange(0, max_shift + 1, device=x.device)
-        neg_indices = torch.arange(pad_size - max_shift, pad_size, device=x.device)
-        valid_indices = torch.cat([pos_indices, neg_indices])
         # 使用 abs 是为了同时兼容正向和反向的波形 (+/- 符号)
-        max_corr = torch.max(torch.abs(cross_corr[:, valid_indices]), dim=1)[0]
+        max_corr = torch.max(torch.abs(cross_corr), dim=1)[0]
         return max_corr / (x_energy * y_energy + 1e-8)
     t1 = torch.linspace(-100, 100, 300, device=device)
     tanh_template = torch.tanh(t1).unsqueeze(0) # [1, 300]
-    corr_shock_B = get_max_corr_template(B, tanh_template, max_shift=50)
+    corr_shock_B = get_max_corr_template(B, tanh_template)
     corr_shock_B = torch.where(mask_comp, corr_shock_B, torch.zeros_like(corr_shock_B))
 
     # (15) 梯度（斜率）的偏度 (反映跳变的方向性)
@@ -468,11 +469,12 @@ def extract_physical_features_batch(data_batch, device):
         B_dip,
         corr_bmax_bmin,
         dom_freq,
-        max_grad_bz,
+        # max_grad_bz,
         R_jump,
         peakiness_dot_bmax,
         b_max_flipscore,
         kurt_dot_B,
+        # int_dot_bz_window,
         kurt_dot_bz,
         complexity_index_bz,
         complexity_index_bmax,
@@ -484,18 +486,15 @@ def extract_physical_features_batch(data_batch, device):
 
 
 # %%
-def physical_contrastive_loss(embeddings, labels, phys_features, margin=2.0, training=True):
+def physical_contrastive_loss(embeddings, labels, phys_features, margin=2.0):
     N = embeddings.size(0)
     device = embeddings.device
 
     # phys_features 是从 DataLoader 直接传进来的 [N, feature_dim]
+    # 只需做标准化和 cdist
     feat_mean = phys_features.mean(dim=0, keepdim=True)
     feat_std = phys_features.std(dim=0, keepdim=True) + 1e-6
     phys_features_norm = (phys_features - feat_mean) / feat_std
-
-    # 训练时加微小高斯噪声，防止在稀疏物理特征上过拟合
-    if training:
-        phys_features_norm = phys_features_norm + torch.randn_like(phys_features_norm) * 0.05
 
     # 计算物理差异矩阵 D_phys 和隐空间距离矩阵 d_ij
     phys_diff_matrix = torch.cdist(phys_features_norm, phys_features_norm, p=2)
@@ -515,7 +514,7 @@ def physical_contrastive_loss(embeddings, labels, phys_features, margin=2.0, tra
     mask = torch.eye(N, device=device)
 
     # 正样本对损失
-    # 1. 标签明确相同且物理特征相近 2. 或者虽然没标签但物理特征极度接近
+    # 1. 标签明确相同 2. 或者虽然没标签但物理特征极度接近
     pos_mask = (same_label | (~has_label & phys_similar)) * (1 - mask)
     if pos_mask.sum() > 0:
         pos_loss = (pos_mask * (dist_matrix**2 + 0.2 * phys_diff_matrix)).sum() / pos_mask.sum()
@@ -535,7 +534,7 @@ def physical_contrastive_loss(embeddings, labels, phys_features, margin=2.0, tra
 
 
 # %%
-def calc_invariant_mse(pred, target, max_shift=50):
+def calc_invariant_mse(pred, target, max_shift=20):
     B, L, C = pred.shape
     target_flipped = torch.flip(target, dims=[1])
     best_loss = torch.full((B, C), float('inf'), device=pred.device)
@@ -557,9 +556,16 @@ def calc_invariant_mse(pred, target, max_shift=50):
 
 
 # %%
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+import itertools
+from tqdm import tqdm
+import copy
+import numpy as np
 
-def train_autoencoder(model, train_dataloader, val_dataloader, proto_dataloader, device,
-                      epochs=100, lr=0.001, patience=10, best_model_path=None,
+def train_autoencoder(model, train_dataloader, val_dataloader, proto_dataloader, device, 
+                      epochs=100, lr=0.001, patience=10, best_model_path=None, 
                       max_lambda_contrastive=0.1, step_lambda_contrastive=0.01, start_lambda_contrastive=0.0, max_shift=20):
     
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
@@ -595,11 +601,13 @@ def train_autoencoder(model, train_dataloader, val_dataloader, proto_dataloader,
             
             optimizer.zero_grad()
             
-            # --- A. 重建 + 编码 (一次 forward，省掉重复 encode) ---
-            output, z_x = model(x, return_embedding=True)
+            # --- A. 训练数据重建 ---
+            output = model(x)
             mse_per_channel = calc_invariant_mse(output, x, max_shift=max_shift)
             weighted_errs = (mse_per_channel * loss_weights) / 4.0
-
+            
+            # --- B. 编码 (重建 + 对比路径复用) ---
+            z_x = model.encode(x)
             z_p = model.encode(p_data)
             
             loss_rec = (1 - current_lambda) * weighted_errs.sum()
@@ -637,22 +645,23 @@ def train_autoencoder(model, train_dataloader, val_dataloader, proto_dataloader,
                 vx, vx_phys = v_batch_item
                 vx, vx_phys = vx.to(device), vx_phys.to(device)
                 
-                v_output, vz_x = model(vx, return_embedding=True)
+                v_output = model(vx)
                 v_mse_per_channel = calc_invariant_mse(v_output, vx, max_shift=max_shift)
                 v_weighted_errs = (v_mse_per_channel * loss_weights) / 4.0
                 total_val_rec_loss += v_weighted_errs.sum().item()
                 val_errs_detailed += v_weighted_errs.cpu().numpy()
-
+                
                 vp_data, vp_labels, vp_phys = next(val_proto_iter)
                 vp_data, vp_labels, vp_phys = vp_data.to(device), vp_labels.to(device), vp_phys.to(device)
-
+                
+                vz_x = model.encode(vx)
                 vz_p = model.encode(vp_data)
                 
                 v_comb_emb = torch.cat([vz_x, vz_p], dim=0)
                 v_comb_phys = torch.cat([vx_phys, vp_phys], dim=0)
                 vx_labels = torch.full((vx.size(0),), -1, dtype=torch.long, device=device)
                 v_comb_labels = torch.cat([vx_labels, vp_labels], dim=0)
-                v_loss_con = physical_contrastive_loss(v_comb_emb, v_comb_labels, v_comb_phys, training=False)
+                v_loss_con = physical_contrastive_loss(v_comb_emb, v_comb_labels, v_comb_phys)
                 total_val_con_loss += v_loss_con.item()
 
         avg_val_rec = (1 - current_lambda) * total_val_rec_loss / len(val_dataloader)
@@ -700,89 +709,90 @@ def train_autoencoder(model, train_dataloader, val_dataloader, proto_dataloader,
 # ## 主程序
 
 # %%
-workspace = '..\\'
-trainset_path = os.path.join(workspace, 'trainset')
-samples_path = os.path.join(workspace, 'samples_clean')
+if __name__ == "__main__":
+    workspace = '..\\'
+    trainset_path = os.path.join(workspace, 'trainset')
+    samples_path = os.path.join(workspace, 'samples_clean')
 
-# 创建图片输出目录
-img_dir = os.path.join(workspace, 'output', 'images', 'eu')
-os.makedirs(img_dir, exist_ok=True)
+    # --- 1. 加载数据 ---
+    data_all_processed, data_all_raw, data_all_files = load_data(trainset_path)
+    
+    # --- 同步随机打乱 ---
+    combined = list(zip(data_all_processed, data_all_raw, data_all_files))
+    import random
+    seed = 42
+    random.seed(seed) 
+    random.shuffle(combined)
+    data_all_processed, data_all_raw, data_all_files = zip(*combined)
+    data_all_processed = list(data_all_processed)
+    data_all_raw = list(data_all_raw)
+    data_all_files = list(data_all_files)
+    
+    print(f"Total dataset has {len(data_all_files)} files. Data has been shuffled.")
 
-# --- 1. 加载数据 ---
-data_all_processed, data_all_raw, data_all_files = load_data(trainset_path)
+    # --- 2. 执行 8:1:1 划分 ---
+    total_samples = len(data_all_processed)
+    train_size = int(0.8 * total_samples)
+    val_size = int(0.1 * total_samples)
+    
+    train_data_processed = data_all_processed[:train_size]
+    val_data_processed = data_all_processed[train_size:train_size+val_size]
+    test_data_processed = data_all_processed[train_size+val_size:]
+    test_data_raw = data_all_raw[train_size+val_size:]
+    test_files = data_all_files[train_size+val_size:]
 
-# --- 同步随机打乱 ---
-combined = list(zip(data_all_processed, data_all_raw, data_all_files))
-import random
-seed = 42
-random.seed(seed) 
-random.shuffle(combined)
-data_all_processed, data_all_raw, data_all_files = zip(*combined)
-data_all_processed = list(data_all_processed)
-data_all_raw = list(data_all_raw)
-data_all_files = list(data_all_files)
+    # --- 3. 加载并增强范本 (Prototypes) ---
+    classes = ['sheet', 'vortex chain', 'c vortex', 'l vortex', 'hole', 'soliton', 'shock', 'alfen dis', 'noise']
+    prototypes_processed_raw = {}
+    for cls in classes:
+        cls_path = os.path.join(samples_path, cls)
+        if not os.path.exists(cls_path): continue
+        data_p, _, _ = load_data(cls_path)
+        prototypes_processed_raw[cls] = data_p
+    prototypes_processed = augment_prototypes(prototypes_processed_raw)
 
-print(f"Total dataset has {len(data_all_files)} files. Data has been shuffled.")
+    # --- 4. 确定最大长度并执行预处理 ---
+    target_pts = 300
+    print(f"Executing Preprocessing (Interpolation) to {target_pts} points...")
+    X_train_pad = preprocess_sequences(train_data_processed, target_pts)
+    X_val_pad = preprocess_sequences(val_data_processed, target_pts)
+    X_test_pad = preprocess_sequences(test_data_processed, target_pts)
+    
+    prototypes_pad = {}
+    for cls, seqs in prototypes_processed.items():
+        prototypes_pad[cls] = preprocess_sequences(seqs, target_pts)
 
-# --- 2. 执行 8:1:1 划分 ---
-total_samples = len(data_all_processed)
-train_size = int(0.8 * total_samples)
-val_size = int(0.1 * total_samples)
+    print("Pre-calculating physical features for training set...")
+    X_train_tensor = torch.tensor(X_train_pad, dtype=torch.float32).to(device)
+    train_phys_feats = extract_physical_features_batch(X_train_tensor, device).cpu()
+    X_val_tensor = torch.tensor(X_val_pad, dtype=torch.float32).to(device)
+    val_phys_feats = extract_physical_features_batch(X_val_tensor, device).cpu()
+    prototypes_phys_feats = {}
+    for cls, seqs in prototypes_pad.items():
+        seqs_tensor = torch.tensor(seqs, dtype=torch.float32).to(device)
+        prototypes_phys_feats[cls] = extract_physical_features_batch(seqs_tensor, device).cpu().numpy()
 
-train_data_processed = data_all_processed[:train_size]
-val_data_processed = data_all_processed[train_size:train_size+val_size]
-test_data_processed = data_all_processed[train_size+val_size:]
-test_data_raw = data_all_raw[train_size+val_size:]
-test_files = data_all_files[train_size+val_size:]
+    # 5. 构建 Dataset
+    train_dataset = TimeSeriesDataset(X_train_pad, phys_features=train_phys_feats)
+    val_dataset = TimeSeriesDataset(X_val_pad, phys_features=val_phys_feats)
+    proto_dataset = PrototypeDataset(prototypes_pad, prototypes_phys_feats)
+    
+    train_dataloader = DataLoader(train_dataset, batch_size=128, shuffle=True, pin_memory=False) 
+    val_dataloader = DataLoader(val_dataset, batch_size=128, shuffle=True, pin_memory=False) 
+    proto_dataloader = DataLoader(proto_dataset, batch_size=128, shuffle=True, pin_memory=False)
 
-# --- 3. 加载并增强范本 (Prototypes) ---
-classes = ['sheet', 'vortex chain', 'c vortex', 'l vortex', 'hole', 'soliton', 'shock', 'alfen dis', 'noise']
-prototypes_processed_raw = {}
-for cls in classes:
-    cls_path = os.path.join(samples_path, cls)
-    if not os.path.exists(cls_path): continue
-    data_p, _, _ = load_data(cls_path)
-    prototypes_processed_raw[cls] = data_p
-prototypes_processed = augment_prototypes(prototypes_processed_raw)
-
-# --- 4. 确定最大长度并执行预处理 ---
-target_pts = 300
-print(f"Executing Preprocessing (Interpolation) to {target_pts} points...")
-X_train_pad = preprocess_sequences(train_data_processed, target_pts)
-X_val_pad = preprocess_sequences(val_data_processed, target_pts)
-X_test_pad = preprocess_sequences(test_data_processed, target_pts)
-
-prototypes_pad = {}
-for cls, seqs in prototypes_processed.items():
-    prototypes_pad[cls] = preprocess_sequences(seqs, target_pts)
-
-print("Pre-calculating physical features for training set...")
-X_train_tensor = torch.tensor(X_train_pad, dtype=torch.float32).to(device)
-train_phys_feats = extract_physical_features_batch(X_train_tensor, device).cpu()
-X_val_tensor = torch.tensor(X_val_pad, dtype=torch.float32).to(device)
-val_phys_feats = extract_physical_features_batch(X_val_tensor, device).cpu()
-prototypes_phys_feats = {}
-for cls, seqs in prototypes_pad.items():
-    seqs_tensor = torch.tensor(seqs, dtype=torch.float32).to(device)
-    prototypes_phys_feats[cls] = extract_physical_features_batch(seqs_tensor, device).cpu().numpy()
-
-# 5. 构建 Dataset
-train_dataset = TimeSeriesDataset(X_train_pad, phys_features=train_phys_feats)
-val_dataset = TimeSeriesDataset(X_val_pad, phys_features=val_phys_feats)
-proto_dataset = PrototypeDataset(prototypes_pad, prototypes_phys_feats)
-
-train_dataloader = DataLoader(train_dataset, batch_size=128, shuffle=True, pin_memory=False)
-val_dataloader = DataLoader(val_dataset, batch_size=128, shuffle=True, pin_memory=False)
-proto_dataloader = DataLoader(proto_dataset, batch_size=128, shuffle=True, pin_memory=False)
-
-# --- 6. 训练 ---
-model = BiAutoencoder(input_size=4, cnn_channels=16, hidden_size=128, num_layers=2, latent_dim=64).to(device)
-print(f"Starting Autoencoder training on {device}...")
-torch.cuda.empty_cache()
-train_loss_list, val_loss_list, all_train_loss_list, all_val_loss_list = train_autoencoder(
-    model, train_dataloader, val_dataloader, proto_dataloader, device,
-    epochs=100, lr=0.005, patience=10, max_lambda_contrastive=0.05, step_lambda_contrastive=0, start_lambda_contrastive=0.05, max_shift=50
-)
+    # --- 6. 训练 ---
+    model = BiAutoencoder(input_size=4, cnn_channels=16, hidden_size=128, num_layers=2, latent_dim=64).to(device)
+    print(f"Starting Autoencoder training on {device}...")
+    torch.cuda.empty_cache()
+    train_loss_list, val_loss_list, all_train_loss_list, all_val_loss_list = train_autoencoder(
+        model, train_dataloader, val_dataloader, proto_dataloader, device, 
+        epochs=100, lr=0.005, patience=10, max_lambda_contrastive=0.05, step_lambda_contrastive=0, start_lambda_contrastive=0.05, max_shift=50
+    )
+    # train_loss_list, val_loss_list, all_train_loss_list, all_val_loss_list = train_autoencoder(
+    # model, train_dataloader, val_dataloader, proto_dataloader, device, 
+    # epochs=150, lr=0.005, patience=10, max_lambda_contrastive=0, step_lambda_contrastive=0, start_lambda_contrastive=0, max_shift=50, proto_mse_weight=0, proto_reg_weight=0.5
+    # )
 
 # %% [markdown]
 # loss = (1 - λ) × data_mse  +  λ × contrastive
@@ -799,42 +809,40 @@ plt.ylabel('Loss')
 plt.title('Training and Validation Loss')
 plt.legend()
 plt.grid(True, linestyle='--', alpha=0.7)
-plt.show()
 
 all_train_loss_array = np.array(all_train_loss_list)
 all_val_loss_array = np.array(all_val_loss_list)
 
+mask = np.arange(len(all_train_loss_array[0])) >= 0
 fig = plt.figure(figsize=(8, 4))
-all_train_mse_loss = np.sum([all_train_loss_array[i] for i in range(4)], axis=0)
+all_train_mse_loss = np.sum([all_train_loss_array[i][mask] for i in range(4)], axis=0)
 plt.plot(all_train_mse_loss, label='Train Loss MSE')
-plt.plot(all_train_loss_array[4], label='Train Loss Contrastive')
-plt.plot(all_train_loss_array[0], label='Train Loss B')
-plt.plot(all_train_loss_array[1], label='Train Loss b_z')
-plt.plot(all_train_loss_array[2], label='Train Loss b_max')
-plt.plot(all_train_loss_array[3], label='Train Loss b_min')
+plt.plot(all_train_loss_array[0][mask], label='Train Loss B')
+plt.plot(all_train_loss_array[1][mask], label='Train Loss b_z')
+plt.plot(all_train_loss_array[2][mask], label='Train Loss b_max')
+plt.plot(all_train_loss_array[3][mask], label='Train Loss b_min')
+plt.plot(all_train_loss_array[4][mask], label='Train Loss Contrastive')
 plt.xlabel('Epoch')
 plt.ylabel('Loss')
 plt.title('Training Loss')
 plt.legend()
 plt.grid(True, linestyle='--', alpha=0.7)
-plt.show()
 
 
 fig = plt.figure(figsize=(8, 4))
-all_val_mse_loss = np.sum([all_val_loss_array[i] for i in range(4)], axis=0)
+all_val_mse_loss = np.sum([all_val_loss_array[i][mask] for i in range(4)], axis=0)
 plt.plot(all_val_mse_loss, label='Validation Loss MSE')
-plt.plot(all_val_loss_array[4], label='Validation Loss Contrastive')
-plt.plot(all_val_loss_array[0], label='Validation Loss B')
-plt.plot(all_val_loss_array[1], label='Validation Loss b_z')
-plt.plot(all_val_loss_array[2], label='Validation Loss b_max')
-plt.plot(all_val_loss_array[3], label='Validation Loss b_min')
+plt.plot(all_val_loss_array[0][mask], label='Validation Loss B')
+plt.plot(all_val_loss_array[1][mask], label='Validation Loss b_z')
+plt.plot(all_val_loss_array[2][mask], label='Validation Loss b_max')
+plt.plot(all_val_loss_array[3][mask], label='Validation Loss b_min')
+plt.plot(all_val_loss_array[4][mask], label='Validation Loss Contrastive')
 plt.xlabel('Epoch')
 plt.ylabel('Loss')
 plt.title('Validation Loss')
 plt.legend()
 plt.grid(True, linestyle='--', alpha=0.7)
 plt.show()
-
 
 # 保存loss到../output/loss_当前时间.csv，第一行为labels，第一列为epoch，后续列为各项loss
 import datetime
@@ -866,7 +874,6 @@ with open(loss_csv_path, mode='w', newline='') as f:
             all_val_loss_array[3][i]
         ]
         writer.writerow(row)
-
 
 # %% [markdown]
 # ## 预测
@@ -1029,7 +1036,7 @@ def plot_tsne(model, test_loader, prototypes_pad, predictions, device):
     proto_2d = vecs_2d[len(test_embs):]
     
     # --- 3. 建立颜色映射表 ---
-    # 定义类别颜色
+    # 定义类别颜色 (和你范本绘图的颜色列表一致)
     colors_list = ['red', 'blue', 'green', 'orange', 'purple', 'cyan', 'magenta']
     color_map = {cls: colors_list[i % len(colors_list)] for i, cls in enumerate(unique_protos)}
     color_map['neither'] = 'lightgrey' # 没认出来的设为灰色
@@ -1066,10 +1073,10 @@ def plot_tsne(model, test_loader, prototypes_pad, predictions, device):
     plt.legend()
     plt.grid(True, linestyle='--', alpha=0.3)
     plt.tight_layout()
+    plt.show()
     
 test_dataloader = DataLoader(TimeSeriesDataset(X_test_pad), batch_size=128, shuffle=False, num_workers=0)
 plot_tsne(model.to(device), test_dataloader, prototypes_pad, predictions, device)
-plt.show() 
 
 
 # %% [markdown]

@@ -378,8 +378,8 @@ def extract_physical_features_batch(data_batch, device):
     comp_index = torch.sqrt(bz_sq_max / (bperp_sq_max + 1e-6))
     
     # 定义物理门控掩码 (软门控: 中间压缩性结构[0.707~1]两组特征全激活)
-    mask_alfven = comp_index < 1       # 阿尔芬结构门控
-    mask_comp = comp_index > 0.7071  # 压缩性结构门控 (1/√2: 能量均分点)
+    mask_alfven = comp_index < 1.5       # 阿尔芬结构门控
+    mask_comp = comp_index > 0.5  # 压缩性结构门控
 
     def get_abs_skewness(x):
         """计算序列的绝对偏度：E[(x-mu)^3] / sigma^3"""
