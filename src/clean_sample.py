@@ -377,9 +377,9 @@ def extract_physical_features_batch(data_batch, device):
     bperp_sq_max = torch.max(bmax**2 + bmin**2, dim=1)[0]
     comp_index = torch.sqrt(bz_sq_max / (bperp_sq_max + 1e-6))
     
-    # 定义物理门控掩码 (仅保留阿尔芬结构的硬门控)
-    mask_alfven = comp_index < 1.0     # 阿尔芬结构门控
-    mask_comp = comp_index > 0.5     # 压缩性结构门控
+    # 定义物理门控掩码 (软门控: 中间压缩性结构[0.707~1]两组特征全激活)
+    mask_alfven = comp_index < 1       # 阿尔芬结构门控
+    mask_comp = comp_index > 0.7071  # 压缩性结构门控 (1/√2: 能量均分点)
 
     def get_abs_skewness(x):
         """计算序列的绝对偏度：E[(x-mu)^3] / sigma^3"""
@@ -390,7 +390,7 @@ def extract_physical_features_batch(data_batch, device):
         return torch.abs(skew)
 
     # =========================================================================
-    # A. 阿尔芬结构专属判据 (保留 mask_alfven 门控)
+    # A. 阿尔芬结构判据
     # =========================================================================
     
     # (2) 极化比: max(|b_min|) / max(|b_max|)
@@ -530,18 +530,20 @@ def extract_physical_features_batch(data_batch, device):
 
 
     # =========================================================================
-    # B. 压缩性结构专属判据 (移除 mask_comp 硬截断，保留物理连续性)
+    # B. 压缩性结构判据
     # =========================================================================
 
     # (3) b_z和B 扰动凹陷或凸起程度
     idx_max_bz = torch.argmax(torch.abs(bz), dim=1)
     bz_dip = bz[batch_indices, idx_max_bz]
+    bz_dip = torch.where(mask_comp, bz_dip, torch.zeros_like(bz_dip))
     idx_max_B = torch.argmax(torch.abs(B), dim=1)
     B_dip = B[batch_indices, idx_max_B]
     B_dip = torch.where(mask_comp, B_dip, torch.zeros_like(B_dip))
 
     # (6) 激波指标: b_z 斜率(差分)绝对值的最大值
     max_grad_bz = torch.max(torch.abs(bz[:, 1:] - bz[:, :-1]), dim=1)[0]
+    max_grad_bz = torch.where(mask_comp, max_grad_bz, torch.zeros_like(max_grad_bz))
 
     # (8) 激波判据：b_z最大值的绝对值减最小值的绝对值
     b_z_max_ = torch.max(bz, dim=1)[0]
@@ -580,7 +582,9 @@ def extract_physical_features_batch(data_batch, device):
         score = torch.exp(-(complexity_index-1)**2 / 0.3 **2) # 距离标准值1越远，得分越低
         return score
     complexity_index_bz = calc_criterion_16(bz)
+    complexity_index_bz = torch.where(mask_comp, complexity_index_bz, torch.zeros_like(complexity_index_bz))
     complexity_index_bmax = calc_criterion_16(bmax)
+    complexity_index_bmax = torch.where(mask_alfven, complexity_index_bmax, torch.zeros_like(complexity_index_bmax))
 
     # (14) B 场与 tanh 模板的最大相关性
     def get_max_corr_template(x, y_template, max_shift=50):

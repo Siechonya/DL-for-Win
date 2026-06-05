@@ -48,18 +48,18 @@ Features computed by `extract_physical_features_batch` and returned in fixed ord
 | --- | --- | --- | --- |
 | 0 | pol_ratio | Alfven | mask_alfven |
 | 1 | comp_index | Compressible | mask_comp |
-| 2 | bz_dip | Compressible | — |
+| 2 | bz_dip | Compressible | mask_comp |
 | 3 | B_dip | Compressible | mask_comp |
 | 4 | corr_bmax_bmin | Alfven | mask_alfven |
 | 5 | dom_freq | Alfven | mask_alfven |
-| 6 | max_grad_bz | Compressible | — |
+| 6 | max_grad_bz | Compressible | mask_comp |
 | 7 | R_jump | Compressible | mask_comp |
 | 8 | peakiness_dot_bmax | Alfven | mask_alfven |
 | 9 | b_max_flipscore | Alfven | mask_alfven |
 | 10 | kurt_dot_B | Compressible | mask_comp |
 | 11 | kurt_dot_bz | Compressible | mask_comp |
-| 12 | complexity_index_bz | Compressible | — |
-| 13 | complexity_index_bmax | Alfven | — |
+| 12 | complexity_index_bz | Compressible | mask_comp |
+| 13 | complexity_index_bmax | Alfven | mask_alfven |
 | 14 | corr_shock_B | Compressible | mask_comp |
 | 15 | abs_skew_grad_B | Compressible | mask_comp |
 | 16 | abs_skew_grad_bz | Compressible | mask_comp |
@@ -80,23 +80,37 @@ The contrastive loss (`physical_contrastive_loss` in cell `e54b11c5`) is a plain
 - **Git remote**: `git@github.com:Siechonya/DL-for-Win.git`, branch `main`
 - **Kernel**: `dplearn` registered at `C:\Users\predor\AppData\Roaming\jupyter\kernels\dplearn\kernel.json`
 
-## Notebook editing rules (CRITICAL)
+## Code editing rules (CRITICAL)
 
-1. **Never use `NotebookEdit`** on cells larger than ~20 lines — it replaces the ENTIRE cell content, not a portion. For large cells, use PowerShell Python scripts that surgically replace lines within `cell['source']` arrays.
+**Default workflow: sync .ipynb → .py, edit .py, sync .py → .ipynb.** Jupytext pairing keeps them in sync bidirectionally.
 
-2. **Always verify JSON validity** after any notebook edit: `python -c "import json; json.load(open('path.ipynb'))"`
+**Step 1 — before editing**: Sync .ipynb to .py to get the latest notebook changes:
+```
+jupytext --sync src\<file>.ipynb
+```
+**Step 2**: Edit the `.py` file with the Edit tool (plain Python, no JSON escaping).
+**Step 3 — after editing**: Sync .py back to .ipynb:
+```
+jupytext --sync src\<file>.py
+```
 
-3. **`\n` escaping — the #1 cause of notebook corruption**: When setting a notebook source line via Python, the goal is for the final Python source code (inside the cell) to contain the two-character sequence `\n`. The JSON representation of this is `\\n` (escaped backslash + n). To achieve this in your modification script:
-   - **WRONG**: `source[i] = '...table.split(\"\n\"):\n'` — the `\n` inside the string literal becomes a REAL newline character, which json.dump writes as `\n` in JSON, which JSON parses back as a newline → source code breaks across two lines
-   - **RIGHT**: `source[i] = '...table.split(\"\\n\"):\n'` — the `\\n` inside the string literal is literal-backslash + n, json.dump writes `\\n` in JSON, JSON parses back to `\n` (two chars) → source is correct
-   - **Verification**: After editing, check `repr(src)` for `\\\\n` (four chars in repr = two chars in actual source = correct). If you see a real line break inside a string literal, the escaping was wrong.
-   - **Golden rule**: `json.dump()` handles escaping automatically from Python string → JSON. Feed it the string you want to appear in the source, with literal `\` and `n` as separate characters (i.e. `\\n` in your Python script). Never try to construct JSON escape sequences by hand.
+The jupytext executable is `D:\Anaconda\envs\jupytext\python.exe -m jupytext`.
 
-4. **When things go wrong**: `git checkout -- <file>` to restore from the last commit. The repo is at commit `9b04daa` ("Cleanup") pushed to remote. All local uncommitted changes are experimental.
+1. **`.py` editing — NEVER `replace_all` on trivial strings**: `.py` files use `# %%` as cell separators — these are critical markers that jupytext uses to split cells. NEVER do `replace_all: true` with trivial strings like `[]`, `:`, `#`, or short variable names — they appear in hundreds of innocuous locations and will corrupt the entire file. Always use context-rich, unique `old_string` patterns (at least 2-3 lines, with surrounding code) and keep `replace_all: false` unless you are absolutely certain the match only occurs in the intended locations.
 
-5. **`.py` editing — NEVER `replace_all` on trivial strings**: After jupytext pairing, prefer editing `.py` files. But `.py` files use `# %%` as cell separators — these are critical markers that jupytext uses to split cells. NEVER do `replace_all: true` with trivial strings like `[]`, `:`, `#`, or short variable names — they appear in hundreds of innocuous locations and will corrupt the entire file. Always use context-rich, unique `old_string` patterns (at least 2-3 lines, with surrounding code) and keep `replace_all: false` unless you are absolutely certain the match only occurs in the intended locations.
+2. **After editing `.py`, sync to `.ipynb`**: `& 'D:\Anaconda\envs\jupytext\python.exe' -m jupytext --sync src\<file>.py`
 
-6. **Surgical editing pattern** (preferred over NotebookEdit):
+3. **When things go wrong**: `git checkout -- <file>` to restore from the last commit. The repo is at commit `c406543` ("Revert global phys_feat_std normalization") pushed to remote. All local uncommitted changes are experimental.
+
+### Legacy: direct `.ipynb` editing (only when `.py` is unavailable)
+
+4. **Never use `NotebookEdit`** on cells larger than ~20 lines — it replaces the ENTIRE cell content, not a portion.
+
+5. **Always verify JSON validity** after any notebook edit: `python -c "import json; json.load(open('path.ipynb'))"`
+
+6. **`\n` escaping — the #1 cause of notebook corruption**: In modification scripts, use `"\\n"` (double-backslash) to produce literal `\n` in source code. json.dump handles the rest. NEVER use `"\n"` inside a Python script that writes notebook source — it becomes a real newline and corrupts JSON.
+
+7. **Surgical editing pattern** (when .ipynb editing is unavoidable):
 ```python
 import json
 with open(nb_path, 'r', encoding='utf-8') as f:
@@ -106,7 +120,6 @@ for cell in nb['cells']:
         source = cell['source']
         new_source = []
         for line in source:
-            # Apply targeted replacements
             if 'old pattern' in line:
                 line = line.replace('old', 'new')
             new_source.append(line)
