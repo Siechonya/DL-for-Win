@@ -773,7 +773,7 @@ model = BiAutoencoder(input_size=4, cnn_channels=16, hidden_size=128, num_layers
 print(f"Starting Autoencoder training on {device}...")
 torch.cuda.empty_cache()
 train_loss_list, val_loss_list, all_train_loss_list, all_val_loss_list = train_autoencoder(
-    model, train_dataloader, val_dataloader, proto_dataloader, device, 
+    model, train_dataloader, val_dataloader, proto_dataloader, device,
     epochs=100, lr=0.005, patience=10, max_lambda_contrastive=0.05, step_lambda_contrastive=0, start_lambda_contrastive=0.05, max_shift=50
 )
 

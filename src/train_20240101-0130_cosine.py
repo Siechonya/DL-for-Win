@@ -565,8 +565,8 @@ from tqdm import tqdm
 import copy
 import numpy as np
 
-def train_autoencoder(model, train_dataloader, val_dataloader, proto_dataloader, device, 
-                      epochs=100, lr=0.001, patience=10, best_model_path=None, 
+def train_autoencoder(model, train_dataloader, val_dataloader, proto_dataloader, device,
+                      epochs=100, lr=0.001, patience=10, best_model_path=None,
                       max_lambda_contrastive=0.1, step_lambda_contrastive=0.01, start_lambda_contrastive=0.0, max_shift=20):
     
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
@@ -786,7 +786,7 @@ if __name__ == "__main__":
     print(f"Starting Autoencoder training on {device}...")
     torch.cuda.empty_cache()
     train_loss_list, val_loss_list, all_train_loss_list, all_val_loss_list = train_autoencoder(
-        model, train_dataloader, val_dataloader, proto_dataloader, device, 
+        model, train_dataloader, val_dataloader, proto_dataloader, device,
         epochs=100, lr=0.005, patience=10, max_lambda_contrastive=0.1, step_lambda_contrastive=0, start_lambda_contrastive=0.1, max_shift=50
     )
 
