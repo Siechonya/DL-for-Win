@@ -185,6 +185,8 @@ class PrototypeDataset(Dataset):
 
 
 # %%
+import torch
+
 def extract_physical_features_batch(data_batch, device):
     # data_batch: [N, 300, 4]
     B = data_batch[:, :, 0]
@@ -214,23 +216,21 @@ def extract_physical_features_batch(data_batch, device):
     bperp_sq_max = torch.max(bmax**2 + bmin**2, dim=1)[0]
     comp_index = torch.sqrt(bz_sq_max / (bperp_sq_max + 1e-6))
     
-    # 定义物理门控掩码 (阿尔芬结构的软门控 + 压缩性结构的软门控)，中间压缩性的所有特征都要激活
-    mask_alfven = comp_index < 1       # 阿尔芬结构门控
-    mask_comp = comp_index > 0.50    # 压缩性结构门控
+    # 定义物理门控掩码 (软门控: 中间压缩性结构[0.707~1]两组特征全激活)
+    mask_alfven = comp_index < 1.5       # 阿尔芬结构门控
+    mask_comp = comp_index > 0.5  # 压缩性结构门控
 
     def get_abs_skewness(x):
-        """计算序列的绝对偏度：E[(x-mu)^3] / sigma^3"""
+        """计算序列的绝对偏度：|E[(x-mu)^3]| * 1000"""
         mu = torch.mean(x, dim=1, keepdim=True)
-        sigma = torch.std(x, dim=1, keepdim=True)
-        # 计算三阶标准矩
-        skew = torch.mean(((x - mu) / (sigma + 1e-6))**3, dim=1)
+        skew = torch.mean((x - mu)**3, dim=1) * 10000
         return torch.abs(skew)
 
     # =========================================================================
     # A. 阿尔芬结构判据
     # =========================================================================
     
-    # (0) 极化比: max(|b_min|) / max(|b_max|)
+    # (2) 极化比: max(|b_min|) / max(|b_max|)
     max_abs_bmin = torch.max(torch.abs(bmin), dim=1)[0]
     max_abs_bmax = torch.max(torch.abs(bmax), dim=1)[0]
     raw_pol_ratio = max_abs_bmin / (max_abs_bmax + 1e-6)
@@ -256,6 +256,7 @@ def extract_physical_features_batch(data_batch, device):
     corr_bmax_bmin = torch.where(condition_corr, raw_corr_bmax_bmin, torch.zeros_like(raw_corr_bmax_bmin))
     
     # (5) b_max 的自相关相位
+    import torch.nn.functional as F
     def get_generalized_freq(x, device):
         N = x.size(1)
         # 1. 去均值标准化
@@ -289,7 +290,7 @@ def extract_physical_features_batch(data_batch, device):
     dom_freq = torch.where(mask_alfven, dom_freq, torch.zeros_like(dom_freq))
 
     
-    # (8,9) B最小时，dot_bmax 凸起的程度和 b_max 的大小
+    # (9) B最小时，dot_bmax 凸起的程度和 b_max 的大小
     def calc_sheet_reversal_criterion(B_full, b_max, search_range=100):
         """
         B_full: [Batch, Length] - 总磁场强度 B
@@ -357,7 +358,7 @@ def extract_physical_features_batch(data_batch, device):
     peakiness_dot_bmax = dot_bmax[batch_indices, idx_min_B]
     b_max_flipscore = calc_sheet_reversal_criterion(B, bmax, search_range=100)
 
-    # (17) b_max梯度的偏度
+    # （16）b_max梯度的偏度
     diff_bmax = bmax[:, 1:] - bmax[:, :-1]
     abs_skew_grad_bmax = get_abs_skewness(diff_bmax)
     abs_skew_grad_bmax = torch.where(mask_alfven, abs_skew_grad_bmax, torch.zeros_like(abs_skew_grad_bmax))
@@ -377,7 +378,7 @@ def extract_physical_features_batch(data_batch, device):
     # (6) 激波指标: b_z 斜率(差分)绝对值的最大值
     max_grad_bz = torch.max(torch.abs(bz[:, 1:] - bz[:, :-1]), dim=1)[0]
 
-    # (7) 激波判据：b_z最大值的绝对值减最小值的绝对值
+    # (8) 激波判据：b_z最大值的绝对值减最小值的绝对值
     b_z_max_ = torch.max(bz, dim=1)[0]
     b_z_min_ = torch.min(bz, dim=1)[0]
     R_jump = torch.abs(b_z_max_) - torch.abs(b_z_min_) # 接近0：shock；接近1：soliton；接近-1：hole
@@ -385,17 +386,15 @@ def extract_physical_features_batch(data_batch, device):
 
     # (10) dot_B 的全局峰度 (Kurtosis)
     mean_dot_B = torch.mean(dot_B, dim=1, keepdim=True)
-    std_dot_B = torch.std(dot_B, dim=1, keepdim=True)
-    kurt_dot_B = torch.mean(((dot_B - mean_dot_B) / (std_dot_B + 1e-6))**4, dim=1) / 10.0
+    kurt_dot_B = torch.mean((dot_B - mean_dot_B)**4, dim=1) * 10000
     kurt_dot_B = torch.where(mask_comp, kurt_dot_B, torch.zeros_like(kurt_dot_B))
 
 
-    # (11) dot_bz 的全局峰度 (Kurtosis)
+    # (12) dot_bz 的全局峰度 (Kurtosis)
     mean_dot_bz = torch.mean(dot_bz, dim=1, keepdim=True)
-    std_dot_bz = torch.std(dot_bz, dim=1, keepdim=True)
-    kurt_dot_bz = torch.mean(((dot_bz - mean_dot_bz) / (std_dot_bz + 1e-6))**4, dim=1) / 10.0
+    kurt_dot_bz = torch.mean((dot_bz - mean_dot_bz)**4, dim=1) * 10000
 
-    # (12,13) b_z和b_max穿过 ±0.5 的次数 (反映震荡结构的复杂程度)
+    # (13) b_z和b_max穿过 ±0.5 的次数 (反映震荡结构的复杂程度)
     def calc_criterion_16(bz, threshold=0.5):
         """
         bz: [Batch, Length] 的张量
@@ -450,6 +449,7 @@ def extract_physical_features_batch(data_batch, device):
     diff_bz = bz[:, 1:] - bz[:, :-1]
     abs_skew_grad_B = get_abs_skewness(diff_B)
     abs_skew_grad_bz = get_abs_skewness(diff_bz)
+    # 采用压缩性门控
     abs_skew_grad_B = torch.where(mask_comp, abs_skew_grad_B, torch.zeros_like(abs_skew_grad_B))
 
     return torch.stack([
@@ -702,7 +702,7 @@ data_all_processed, data_all_raw, data_all_files = load_data(trainset_path)
 # --- 同步随机打乱 ---
 combined = list(zip(data_all_processed, data_all_raw, data_all_files))
 import random
-seed = 123
+seed = 42
 random.seed(seed) 
 random.shuffle(combined)
 data_all_processed, data_all_raw, data_all_files = zip(*combined)
@@ -769,7 +769,7 @@ print(f"Starting Autoencoder training on {device}...")
 torch.cuda.empty_cache()
 train_loss_list, val_loss_list, all_train_loss_list, all_val_loss_list = train_autoencoder(
     model, train_dataloader, val_dataloader, proto_dataloader, device,
-    epochs=100, lr=0.005, patience=10, max_lambda_contrastive=0.05, step_lambda_contrastive=0, start_lambda_contrastive=0.1, max_shift=50
+    epochs=100, lr=0.005, patience=10, max_lambda_contrastive=0.05, step_lambda_contrastive=0, start_lambda_contrastive=0.05, max_shift=50
 )
 
 # %% [markdown]

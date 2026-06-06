@@ -382,11 +382,9 @@ def extract_physical_features_batch(data_batch, device):
     mask_comp = comp_index > 0.5  # 压缩性结构门控
 
     def get_abs_skewness(x):
-        """计算序列的绝对偏度：E[(x-mu)^3] / sigma^3"""
+        """计算序列的绝对偏度：|E[(x-mu)^3]| * 1000"""
         mu = torch.mean(x, dim=1, keepdim=True)
-        sigma = torch.std(x, dim=1, keepdim=True)
-        # 计算三阶标准矩
-        skew = torch.mean(((x - mu) / (sigma + 1e-6))**3, dim=1)
+        skew = torch.mean((x - mu)**3, dim=1) * 10000
         return torch.abs(skew)
 
     # =========================================================================
@@ -549,15 +547,13 @@ def extract_physical_features_batch(data_batch, device):
 
     # (10) dot_B 的全局峰度 (Kurtosis)
     mean_dot_B = torch.mean(dot_B, dim=1, keepdim=True)
-    std_dot_B = torch.std(dot_B, dim=1, keepdim=True)
-    kurt_dot_B = torch.mean(((dot_B - mean_dot_B) / (std_dot_B + 1e-6))**4, dim=1) / 10.0
+    kurt_dot_B = torch.mean((dot_B - mean_dot_B)**4, dim=1) * 10000
     kurt_dot_B = torch.where(mask_comp, kurt_dot_B, torch.zeros_like(kurt_dot_B))
 
 
     # (12) dot_bz 的全局峰度 (Kurtosis)
     mean_dot_bz = torch.mean(dot_bz, dim=1, keepdim=True)
-    std_dot_bz = torch.std(dot_bz, dim=1, keepdim=True)
-    kurt_dot_bz = torch.mean(((dot_bz - mean_dot_bz) / (std_dot_bz + 1e-6))**4, dim=1) / 10.0
+    kurt_dot_bz = torch.mean((dot_bz - mean_dot_bz)**4, dim=1) * 10000
 
     # (13) b_z和b_max穿过 ±0.5 的次数 (反映震荡结构的复杂程度)
     def calc_criterion_16(bz, threshold=0.5):
@@ -708,14 +704,15 @@ def analyze_prototype_features(samples_path, device='cpu'):
         
         features_np = features.cpu().numpy()
         
-        # 4. 计算均值和标准差
+        # 4. 计算最小值、均值、最大值
+        mins = np.min(features_np, axis=0)
         means = np.mean(features_np, axis=0)
-        stds = np.std(features_np, axis=0)
-        
+        maxs = np.max(features_np, axis=0)
+
         # 整理成该类别的统计行
         cluster_res = {'Cluster': cluster}
         for i in range(features_np.shape[1]):
-            cluster_res[f'F{i+1}'] = f"{means[i]:.3f} ± {stds[i]:.3f}"
+            cluster_res[f'F{i+1}'] = f"{means[i]:.3f} ({mins[i]:.3f}, {maxs[i]:.3f})"
         
         all_stats.append(cluster_res)
 
