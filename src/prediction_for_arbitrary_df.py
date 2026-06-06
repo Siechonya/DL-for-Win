@@ -273,7 +273,7 @@ def run_batch_predictions(predictor, data_dir, fraction=0.1, seed=42, batch_log=
 data_dir = os.path.join(workspace, 'testset')
 
 test_data_raw, test_files, test_embeddings, predictions = run_batch_predictions(
-    predictor, data_dir, fraction=1, seed=123
+    predictor, data_dir, fraction=0.1, seed=123
 )
 train_size = 0   # 预测 notebook 无训练/验证划分
 val_size = 0

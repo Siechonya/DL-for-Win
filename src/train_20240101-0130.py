@@ -216,14 +216,15 @@ def extract_physical_features_batch(data_batch, device):
     bperp_sq_max = torch.max(bmax**2 + bmin**2, dim=1)[0]
     comp_index = torch.sqrt(bz_sq_max / (bperp_sq_max + 1e-6))
     
-    # 定义物理门控掩码 (软门控: 中间压缩性结构[0.707~1]两组特征全激活)
-    mask_alfven = comp_index < 1.5       # 阿尔芬结构门控
+    # 定义物理门控掩码 (软门控: 中间压缩性结构[0.5~1]两组特征全激活)
+    mask_alfven = comp_index < 1       # 阿尔芬结构门控
     mask_comp = comp_index > 0.5  # 压缩性结构门控
 
     def get_abs_skewness(x):
-        """计算序列的绝对偏度：|E[(x-mu)^3]| * 1000"""
         mu = torch.mean(x, dim=1, keepdim=True)
-        skew = torch.mean((x - mu)**3, dim=1) * 10000
+        sigma = torch.std(x, dim=1, keepdim=True)
+        sigma_safe = torch.clamp(sigma, min=0.05)  # 防噪声放大
+        skew = torch.mean(((x - mu) / sigma_safe)**3, dim=1)
         return torch.abs(skew)
 
     # =========================================================================
@@ -384,15 +385,21 @@ def extract_physical_features_batch(data_batch, device):
     R_jump = torch.abs(b_z_max_) - torch.abs(b_z_min_) # 接近0：shock；接近1：soliton；接近-1：hole
     R_jump = torch.where(mask_comp, R_jump, torch.zeros_like(R_jump))
 
+    def get_abs_kurtosis(x):
+        mu = torch.mean(x, dim=1, keepdim=True)
+        sigma = torch.std(x, dim=1, keepdim=True)
+        sigma_safe = torch.clamp(sigma, min=0.05)  # 防止噪声放大
+        kurt = torch.mean( ((x - mu) / sigma_safe)**4, dim=1)
+        return kurt
+    
     # (10) dot_B 的全局峰度 (Kurtosis)
     mean_dot_B = torch.mean(dot_B, dim=1, keepdim=True)
-    kurt_dot_B = torch.mean((dot_B - mean_dot_B)**4, dim=1) * 10000
+    kurt_dot_B = get_abs_kurtosis(dot_B)
     kurt_dot_B = torch.where(mask_comp, kurt_dot_B, torch.zeros_like(kurt_dot_B))
-
 
     # (12) dot_bz 的全局峰度 (Kurtosis)
     mean_dot_bz = torch.mean(dot_bz, dim=1, keepdim=True)
-    kurt_dot_bz = torch.mean((dot_bz - mean_dot_bz)**4, dim=1) * 10000
+    kurt_dot_bz = get_abs_kurtosis(dot_bz)
 
     # (13) b_z和b_max穿过 ±0.5 的次数 (反映震荡结构的复杂程度)
     def calc_criterion_16(bz, threshold=0.5):
@@ -475,7 +482,7 @@ def extract_physical_features_batch(data_batch, device):
 
 
 # %%
-def physical_contrastive_loss(embeddings, labels, phys_features, margin=2.0):
+def physical_contrastive_loss(embeddings, labels, phys_features, margin=2.0, feat_weights=None):
     N = embeddings.size(0)
     device = embeddings.device
 
@@ -484,6 +491,10 @@ def physical_contrastive_loss(embeddings, labels, phys_features, margin=2.0):
     feat_mean = phys_features.mean(dim=0, keepdim=True)
     feat_std = phys_features.std(dim=0, keepdim=True) + 1e-6
     phys_features_norm = (phys_features - feat_mean) / feat_std
+
+    # 应用特征权重 (权重乘在归一化特征上, sqrt 因为后续用 L2 距离)
+    if feat_weights is not None:
+        phys_features_norm = phys_features_norm * feat_weights.to(device).sqrt()
 
     # 计算物理差异矩阵 D_phys 和隐空间距离矩阵 d_ij
     phys_diff_matrix = torch.cdist(phys_features_norm, phys_features_norm, p=2)
@@ -548,7 +559,8 @@ def calc_invariant_mse(pred, target, max_shift=50):
 
 def train_autoencoder(model, train_dataloader, val_dataloader, proto_dataloader, device,
                       epochs=100, lr=0.001, patience=10, best_model_path=None,
-                      max_lambda_contrastive=0.1, step_lambda_contrastive=0.01, start_lambda_contrastive=0.0, max_shift=20):
+                      max_lambda_contrastive=0.1, step_lambda_contrastive=0.01, start_lambda_contrastive=0.0, max_shift=20,
+                      feat_weights=None):
     
     optimizer = torch.optim.Adam(model.parameters(), lr=lr)
     scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(optimizer, 'min', factor=0.5, patience=2, min_lr=1e-4)
@@ -597,7 +609,7 @@ def train_autoencoder(model, train_dataloader, val_dataloader, proto_dataloader,
             combined_phys = torch.cat([x_phys, p_phys], dim=0)
             x_labels = torch.full((x.size(0),), -1, dtype=torch.long, device=device)
             combined_labels = torch.cat([x_labels, p_labels], dim=0)
-            loss_con = physical_contrastive_loss(combined_emb, combined_labels, combined_phys)
+            loss_con = physical_contrastive_loss(combined_emb, combined_labels, combined_phys, feat_weights=feat_weights)
 
             weighted_con = current_lambda * loss_con
             loss = loss_rec + weighted_con            
@@ -640,7 +652,7 @@ def train_autoencoder(model, train_dataloader, val_dataloader, proto_dataloader,
                 v_comb_phys = torch.cat([vx_phys, vp_phys], dim=0)
                 vx_labels = torch.full((vx.size(0),), -1, dtype=torch.long, device=device)
                 v_comb_labels = torch.cat([vx_labels, vp_labels], dim=0)
-                v_loss_con = physical_contrastive_loss(v_comb_emb, v_comb_labels, v_comb_phys)
+                v_loss_con = physical_contrastive_loss(v_comb_emb, v_comb_labels, v_comb_phys, feat_weights=feat_weights)
                 total_val_con_loss += v_loss_con.item()
 
         avg_val_rec = (1 - current_lambda) * total_val_rec_loss / len(val_dataloader)
@@ -724,7 +736,7 @@ test_data_raw = data_all_raw[train_size+val_size:]
 test_files = data_all_files[train_size+val_size:]
 
 # --- 3. 加载并增强范本 (Prototypes) ---
-classes = ['sheet', 'vortex chain', 'c vortex', 'l vortex', 'hole', 'soliton', 'shock', 'alfen dis', 'noise']
+classes = ['sheet', 'vortex chain', 'c vortex', 'l vortex', 'hole', 'soliton', 'shock', 'alfen dis']
 prototypes_processed_raw = {}
 for cls in classes:
     cls_path = os.path.join(samples_path, cls)
@@ -767,9 +779,13 @@ proto_dataloader = DataLoader(proto_dataset, batch_size=128, shuffle=True, pin_m
 model = BiAutoencoder(input_size=4, cnn_channels=16, hidden_size=128, num_layers=2, latent_dim=64).to(device)
 print(f"Starting Autoencoder training on {device}...")
 torch.cuda.empty_cache()
+# 特征权重: comp_index(索引1) ×3, 确保Alfvénic/压缩性不混淆 (索引见CLAUDE.md特征表)
+feat_weights = torch.tensor([1., 3., 1., 1., 1., 1., 1., 1., 1., 1., 1., 1., 1., 1., 1., 1., 1., 1.])
+
 train_loss_list, val_loss_list, all_train_loss_list, all_val_loss_list = train_autoencoder(
     model, train_dataloader, val_dataloader, proto_dataloader, device,
-    epochs=100, lr=0.005, patience=10, max_lambda_contrastive=0.05, step_lambda_contrastive=0, start_lambda_contrastive=0.05, max_shift=50
+    epochs=100, lr=0.005, patience=10, max_lambda_contrastive=0.05, step_lambda_contrastive=0, start_lambda_contrastive=0.05, max_shift=50,
+    feat_weights=feat_weights
 )
 
 # %% [markdown]

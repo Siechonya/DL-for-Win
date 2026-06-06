@@ -377,14 +377,15 @@ def extract_physical_features_batch(data_batch, device):
     bperp_sq_max = torch.max(bmax**2 + bmin**2, dim=1)[0]
     comp_index = torch.sqrt(bz_sq_max / (bperp_sq_max + 1e-6))
     
-    # 定义物理门控掩码 (软门控: 中间压缩性结构[0.707~1]两组特征全激活)
-    mask_alfven = comp_index < 1.5       # 阿尔芬结构门控
+    # 定义物理门控掩码 (软门控: 中间压缩性结构[0.5~1]两组特征全激活)
+    mask_alfven = comp_index < 1       # 阿尔芬结构门控
     mask_comp = comp_index > 0.5  # 压缩性结构门控
 
     def get_abs_skewness(x):
-        """计算序列的绝对偏度：|E[(x-mu)^3]| * 1000"""
         mu = torch.mean(x, dim=1, keepdim=True)
-        skew = torch.mean((x - mu)**3, dim=1) * 10000
+        sigma = torch.std(x, dim=1, keepdim=True)
+        sigma_safe = torch.clamp(sigma, min=0.05)  # 防噪声放大
+        skew = torch.mean(((x - mu) / sigma_safe)**3, dim=1)
         return torch.abs(skew)
 
     # =========================================================================
@@ -545,15 +546,21 @@ def extract_physical_features_batch(data_batch, device):
     R_jump = torch.abs(b_z_max_) - torch.abs(b_z_min_) # 接近0：shock；接近1：soliton；接近-1：hole
     R_jump = torch.where(mask_comp, R_jump, torch.zeros_like(R_jump))
 
+    def get_abs_kurtosis(x):
+        mu = torch.mean(x, dim=1, keepdim=True)
+        sigma = torch.std(x, dim=1, keepdim=True)
+        sigma_safe = torch.clamp(sigma, min=0.05)  # 防止噪声放大
+        kurt = torch.mean( ((x - mu) / sigma_safe)**4, dim=1)
+        return kurt
+    
     # (10) dot_B 的全局峰度 (Kurtosis)
     mean_dot_B = torch.mean(dot_B, dim=1, keepdim=True)
-    kurt_dot_B = torch.mean((dot_B - mean_dot_B)**4, dim=1) * 10000
+    kurt_dot_B = get_abs_kurtosis(dot_B)
     kurt_dot_B = torch.where(mask_comp, kurt_dot_B, torch.zeros_like(kurt_dot_B))
-
 
     # (12) dot_bz 的全局峰度 (Kurtosis)
     mean_dot_bz = torch.mean(dot_bz, dim=1, keepdim=True)
-    kurt_dot_bz = torch.mean((dot_bz - mean_dot_bz)**4, dim=1) * 10000
+    kurt_dot_bz = get_abs_kurtosis(dot_bz)
 
     # (13) b_z和b_max穿过 ±0.5 的次数 (反映震荡结构的复杂程度)
     def calc_criterion_16(bz, threshold=0.5):
