@@ -519,9 +519,7 @@ def extract_physical_features_batch(data_batch, device):
         return score
     idx_min_B = torch.argmin(B, dim=1)
     peakiness_dot_bmax = dot_bmax[batch_indices, idx_min_B]
-    peakiness_dot_bmax = torch.where(mask_alfven, peakiness_dot_bmax, torch.zeros_like(peakiness_dot_bmax))
     b_max_flipscore = calc_sheet_reversal_criterion(B, bmax, search_range=100)
-    b_max_flipscore = torch.where(mask_alfven, b_max_flipscore, torch.zeros_like(b_max_flipscore))
 
     # （16）b_max梯度的偏度
     diff_bmax = bmax[:, 1:] - bmax[:, :-1]
@@ -536,14 +534,12 @@ def extract_physical_features_batch(data_batch, device):
     # (3) b_z和B 扰动凹陷或凸起程度
     idx_max_bz = torch.argmax(torch.abs(bz), dim=1)
     bz_dip = bz[batch_indices, idx_max_bz]
-    bz_dip = torch.where(mask_comp, bz_dip, torch.zeros_like(bz_dip))
     idx_max_B = torch.argmax(torch.abs(B), dim=1)
     B_dip = B[batch_indices, idx_max_B]
     B_dip = torch.where(mask_comp, B_dip, torch.zeros_like(B_dip))
 
     # (6) 激波指标: b_z 斜率(差分)绝对值的最大值
     max_grad_bz = torch.max(torch.abs(bz[:, 1:] - bz[:, :-1]), dim=1)[0]
-    max_grad_bz = torch.where(mask_comp, max_grad_bz, torch.zeros_like(max_grad_bz))
 
     # (8) 激波判据：b_z最大值的绝对值减最小值的绝对值
     b_z_max_ = torch.max(bz, dim=1)[0]
@@ -562,7 +558,6 @@ def extract_physical_features_batch(data_batch, device):
     mean_dot_bz = torch.mean(dot_bz, dim=1, keepdim=True)
     std_dot_bz = torch.std(dot_bz, dim=1, keepdim=True)
     kurt_dot_bz = torch.mean(((dot_bz - mean_dot_bz) / (std_dot_bz + 1e-6))**4, dim=1) / 10.0
-    kurt_dot_bz = torch.where(mask_comp, kurt_dot_bz, torch.zeros_like(kurt_dot_bz))
 
     # (13) b_z和b_max穿过 ±0.5 的次数 (反映震荡结构的复杂程度)
     def calc_criterion_16(bz, threshold=0.5):
@@ -582,9 +577,7 @@ def extract_physical_features_batch(data_batch, device):
         score = torch.exp(-(complexity_index-1)**2 / 0.3 **2) # 距离标准值1越远，得分越低
         return score
     complexity_index_bz = calc_criterion_16(bz)
-    complexity_index_bz = torch.where(mask_comp, complexity_index_bz, torch.zeros_like(complexity_index_bz))
     complexity_index_bmax = calc_criterion_16(bmax)
-    complexity_index_bmax = torch.where(mask_alfven, complexity_index_bmax, torch.zeros_like(complexity_index_bmax))
 
     # (14) B 场与 tanh 模板的最大相关性
     def get_max_corr_template(x, y_template, max_shift=50):
@@ -623,7 +616,6 @@ def extract_physical_features_batch(data_batch, device):
     abs_skew_grad_bz = get_abs_skewness(diff_bz)
     # 采用压缩性门控
     abs_skew_grad_B = torch.where(mask_comp, abs_skew_grad_B, torch.zeros_like(abs_skew_grad_B))
-    abs_skew_grad_bz = torch.where(mask_comp, abs_skew_grad_bz, torch.zeros_like(abs_skew_grad_bz))
 
     return torch.stack([
         pol_ratio,

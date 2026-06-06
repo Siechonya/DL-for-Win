@@ -185,7 +185,7 @@ predictor = PhysicalPredictor(
 )
 
 # 加载数据
-test_df = pd.read_parquet(os.path.join(workspace, 'trainset_20240101-0130', '25737.parquet'))
+test_df = pd.read_parquet(os.path.join(workspace, 'trainset', '67578.parquet'))
 
 # 获取预测
 label, dist, details, is_neither = predictor.predict(test_df)

@@ -215,7 +215,7 @@ def extract_physical_features_batch(data_batch, device):
     comp_index = torch.sqrt(bz_sq_max / (bperp_sq_max + 1e-6))
     
     # 定义物理门控掩码 (阿尔芬结构的软门控 + 压缩性结构的软门控)，中间压缩性的所有特征都要激活
-    mask_alfven = comp_index < 1.5       # 阿尔芬结构门控
+    mask_alfven = comp_index < 1       # 阿尔芬结构门控
     mask_comp = comp_index > 0.50    # 压缩性结构门控
 
     def get_abs_skewness(x):
@@ -355,9 +355,7 @@ def extract_physical_features_batch(data_batch, device):
         return score
     idx_min_B = torch.argmin(B, dim=1)
     peakiness_dot_bmax = dot_bmax[batch_indices, idx_min_B]
-    peakiness_dot_bmax = torch.where(mask_alfven, peakiness_dot_bmax, torch.zeros_like(peakiness_dot_bmax))
     b_max_flipscore = calc_sheet_reversal_criterion(B, bmax, search_range=100)
-    b_max_flipscore = torch.where(mask_alfven, b_max_flipscore, torch.zeros_like(b_max_flipscore))
 
     # (17) b_max梯度的偏度
     diff_bmax = bmax[:, 1:] - bmax[:, :-1]
@@ -372,14 +370,12 @@ def extract_physical_features_batch(data_batch, device):
     # (3) b_z和B 扰动凹陷或凸起程度
     idx_max_bz = torch.argmax(torch.abs(bz), dim=1)
     bz_dip = bz[batch_indices, idx_max_bz]
-    bz_dip = torch.where(mask_comp, bz_dip, torch.zeros_like(bz_dip))
     idx_max_B = torch.argmax(torch.abs(B), dim=1)
     B_dip = B[batch_indices, idx_max_B]
     B_dip = torch.where(mask_comp, B_dip, torch.zeros_like(B_dip))
 
     # (6) 激波指标: b_z 斜率(差分)绝对值的最大值
     max_grad_bz = torch.max(torch.abs(bz[:, 1:] - bz[:, :-1]), dim=1)[0]
-    max_grad_bz = torch.where(mask_comp, max_grad_bz, torch.zeros_like(max_grad_bz))
 
     # (7) 激波判据：b_z最大值的绝对值减最小值的绝对值
     b_z_max_ = torch.max(bz, dim=1)[0]
@@ -398,7 +394,6 @@ def extract_physical_features_batch(data_batch, device):
     mean_dot_bz = torch.mean(dot_bz, dim=1, keepdim=True)
     std_dot_bz = torch.std(dot_bz, dim=1, keepdim=True)
     kurt_dot_bz = torch.mean(((dot_bz - mean_dot_bz) / (std_dot_bz + 1e-6))**4, dim=1) / 10.0
-    kurt_dot_bz = torch.where(mask_comp, kurt_dot_bz, torch.zeros_like(kurt_dot_bz))
 
     # (12,13) b_z和b_max穿过 ±0.5 的次数 (反映震荡结构的复杂程度)
     def calc_criterion_16(bz, threshold=0.5):
@@ -418,9 +413,7 @@ def extract_physical_features_batch(data_batch, device):
         score = torch.exp(-(complexity_index-1)**2 / 0.3 **2) # 距离标准值1越远，得分越低
         return score
     complexity_index_bz = calc_criterion_16(bz)
-    complexity_index_bz = torch.where(mask_comp, complexity_index_bz, torch.zeros_like(complexity_index_bz))
     complexity_index_bmax = calc_criterion_16(bmax)
-    complexity_index_bmax = torch.where(mask_alfven, complexity_index_bmax, torch.zeros_like(complexity_index_bmax))
 
     # (14) B 场与 tanh 模板的最大相关性
     def get_max_corr_template(x, y_template, max_shift=50):
@@ -457,9 +450,7 @@ def extract_physical_features_batch(data_batch, device):
     diff_bz = bz[:, 1:] - bz[:, :-1]
     abs_skew_grad_B = get_abs_skewness(diff_B)
     abs_skew_grad_bz = get_abs_skewness(diff_bz)
-    # 采用压缩性门控
     abs_skew_grad_B = torch.where(mask_comp, abs_skew_grad_B, torch.zeros_like(abs_skew_grad_B))
-    abs_skew_grad_bz = torch.where(mask_comp, abs_skew_grad_bz, torch.zeros_like(abs_skew_grad_bz))
 
     return torch.stack([
         pol_ratio,
@@ -484,18 +475,15 @@ def extract_physical_features_batch(data_batch, device):
 
 
 # %%
-def physical_contrastive_loss(embeddings, labels, phys_features, margin=2.0, training=True):
+def physical_contrastive_loss(embeddings, labels, phys_features, margin=2.0):
     N = embeddings.size(0)
     device = embeddings.device
 
     # phys_features 是从 DataLoader 直接传进来的 [N, feature_dim]
+    # 只需做标准化和 cdist
     feat_mean = phys_features.mean(dim=0, keepdim=True)
     feat_std = phys_features.std(dim=0, keepdim=True) + 1e-6
     phys_features_norm = (phys_features - feat_mean) / feat_std
-
-    # 训练时加微小高斯噪声，防止在稀疏物理特征上过拟合
-    if training:
-        phys_features_norm = phys_features_norm + torch.randn_like(phys_features_norm) * 0.05
 
     # 计算物理差异矩阵 D_phys 和隐空间距离矩阵 d_ij
     phys_diff_matrix = torch.cdist(phys_features_norm, phys_features_norm, p=2)
@@ -652,7 +640,7 @@ def train_autoencoder(model, train_dataloader, val_dataloader, proto_dataloader,
                 v_comb_phys = torch.cat([vx_phys, vp_phys], dim=0)
                 vx_labels = torch.full((vx.size(0),), -1, dtype=torch.long, device=device)
                 v_comb_labels = torch.cat([vx_labels, vp_labels], dim=0)
-                v_loss_con = physical_contrastive_loss(v_comb_emb, v_comb_labels, v_comb_phys, training=False)
+                v_loss_con = physical_contrastive_loss(v_comb_emb, v_comb_labels, v_comb_phys)
                 total_val_con_loss += v_loss_con.item()
 
         avg_val_rec = (1 - current_lambda) * total_val_rec_loss / len(val_dataloader)
@@ -714,7 +702,7 @@ data_all_processed, data_all_raw, data_all_files = load_data(trainset_path)
 # --- 同步随机打乱 ---
 combined = list(zip(data_all_processed, data_all_raw, data_all_files))
 import random
-seed = 42
+seed = 123
 random.seed(seed) 
 random.shuffle(combined)
 data_all_processed, data_all_raw, data_all_files = zip(*combined)
@@ -781,7 +769,7 @@ print(f"Starting Autoencoder training on {device}...")
 torch.cuda.empty_cache()
 train_loss_list, val_loss_list, all_train_loss_list, all_val_loss_list = train_autoencoder(
     model, train_dataloader, val_dataloader, proto_dataloader, device,
-    epochs=100, lr=0.005, patience=10, max_lambda_contrastive=0.05, step_lambda_contrastive=0, start_lambda_contrastive=0.05, max_shift=50
+    epochs=100, lr=0.005, patience=10, max_lambda_contrastive=0.05, step_lambda_contrastive=0, start_lambda_contrastive=0.1, max_shift=50
 )
 
 # %% [markdown]

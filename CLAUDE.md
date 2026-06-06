@@ -47,25 +47,31 @@ Features computed by `extract_physical_features_batch` and returned in fixed ord
 | idx | feature | group | gate |
 | --- | --- | --- | --- |
 | 0 | pol_ratio | Alfven | mask_alfven |
-| 1 | comp_index | Compressible | mask_comp |
-| 2 | bz_dip | Compressible | mask_comp |
+| 1 | comp_index | Compressible | — |
+| 2 | bz_dip | Compressible | — |
 | 3 | B_dip | Compressible | mask_comp |
 | 4 | corr_bmax_bmin | Alfven | mask_alfven |
 | 5 | dom_freq | Alfven | mask_alfven |
-| 6 | max_grad_bz | Compressible | mask_comp |
+| 6 | max_grad_bz | Compressible | — |
 | 7 | R_jump | Compressible | mask_comp |
-| 8 | peakiness_dot_bmax | Alfven | mask_alfven |
-| 9 | b_max_flipscore | Alfven | mask_alfven |
+| 8 | peakiness_dot_bmax | Alfven | — |
+| 9 | b_max_flipscore | Alfven | — |
 | 10 | kurt_dot_B | Compressible | mask_comp |
-| 11 | kurt_dot_bz | Compressible | mask_comp |
-| 12 | complexity_index_bz | Compressible | mask_comp |
-| 13 | complexity_index_bmax | Alfven | mask_alfven |
+| 11 | kurt_dot_bz | Compressible | — |
+| 12 | complexity_index_bz | Compressible | — |
+| 13 | complexity_index_bmax | Alfven | — |
 | 14 | corr_shock_B | Compressible | mask_comp |
 | 15 | abs_skew_grad_B | Compressible | mask_comp |
-| 16 | abs_skew_grad_bz | Compressible | mask_comp |
+| 16 | abs_skew_grad_bz | Compressible | — |
 | 17 | abs_skew_grad_bmax | Alfven | mask_alfven |
 
-`alfven_indices = [0, 4, 5, 8, 9, 13, 17]` — used by `extract_physical_features_batch` for gate assignment. Alfven features are gated by `mask_alfven` (`comp_index < 1.0`), compressible features by `mask_comp` (`comp_index > 0.5`).
+`alfven_indices = [0, 4, 5, 8, 9, 13, 17]` — used by `extract_physical_features_batch` for gate assignment. Alfven features are gated by `mask_alfven` (`comp_index < 1`), compressible features by `mask_comp` (`comp_index > 0.5`).
+
+`int_dot_bz_window` (formerly index ~11) was removed — its computation code is deleted, not just commented out.
+
+`—` means no gating mask: these features have intrinsic values that naturally distinguish Alfvenic from compressible structures without artificial zeroing. For example, `bz_dip` is inherently near zero for Alfvenic structures; `peakiness_dot_bmax` is near zero for compressible structures. Adding masks creates unnecessary sparsity that causes contrastive loss overfitting. Features WITH masks are those where raw values have no physical meaning across groups (e.g., `pol_ratio` is meaningless for compressible structures).
+
+The contrastive loss (`physical_contrastive_loss` in cell `e54b11c5`) is a plain function with NO learnable weights. Physical features are z-score normalized, then Euclidean distance in physical space gates positive/negative pairs (thresholds: <0.8 similar, >4.0 dissimilar). This is intentionally simple — learnable feature weights were attempted but introduced instability without proportional benefit.
 
 `int_dot_bz_window` (formerly index ~11) was removed — its computation code is deleted, not just commented out.
 
