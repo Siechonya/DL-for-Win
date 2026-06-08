@@ -216,22 +216,23 @@ def extract_physical_features_batch(data_batch, device):
     bperp_sq_max = torch.max(bmax**2 + bmin**2, dim=1)[0]
     comp_index = torch.sqrt(bz_sq_max / (bperp_sq_max + 1e-6))
     
-    # 定义物理门控掩码 (软门控: 中间压缩性结构[0.5~1]两组特征全激活)
-    mask_alfven = comp_index < 1       # 阿尔芬结构门控
-    mask_comp = comp_index > 0.5  # 压缩性结构门控
+    # 定义物理门控掩码 (仅保留阿尔芬结构的硬门控)
+    mask_alfven = comp_index < 1.0     # 阿尔芬结构门控
+    mask_comp = comp_index > 0.5     # 压缩性结构门控
 
     def get_abs_skewness(x):
+        """计算序列的绝对偏度：E[(x-mu)^3] / sigma^3"""
         mu = torch.mean(x, dim=1, keepdim=True)
         sigma = torch.std(x, dim=1, keepdim=True)
-        sigma_safe = torch.clamp(sigma, min=0.05)  # 防噪声放大
-        skew = torch.mean(((x - mu) / sigma_safe)**3, dim=1)
+        # 计算三阶标准矩
+        skew = torch.mean(((x - mu) / (sigma + 1e-6))**3, dim=1)
         return torch.abs(skew)
 
     # =========================================================================
-    # A. 阿尔芬结构判据
+    # A. 阿尔芬结构专属判据 (保留 mask_alfven 门控)
     # =========================================================================
     
-    # (2) 极化比: max(|b_min|) / max(|b_max|)
+    # (0) 极化比: max(|b_min|) / max(|b_max|)
     max_abs_bmin = torch.max(torch.abs(bmin), dim=1)[0]
     max_abs_bmax = torch.max(torch.abs(bmax), dim=1)[0]
     raw_pol_ratio = max_abs_bmin / (max_abs_bmax + 1e-6)
@@ -291,7 +292,7 @@ def extract_physical_features_batch(data_batch, device):
     dom_freq = torch.where(mask_alfven, dom_freq, torch.zeros_like(dom_freq))
 
     
-    # (9) B最小时，dot_bmax 凸起的程度和 b_max 的大小
+    # (8)(9) B最小时，dot_bmax 凸起的程度和 b_max 的大小
     def calc_sheet_reversal_criterion(B_full, b_max, search_range=100):
         """
         B_full: [Batch, Length] - 总磁场强度 B
@@ -357,51 +358,62 @@ def extract_physical_features_batch(data_batch, device):
         return score
     idx_min_B = torch.argmin(B, dim=1)
     peakiness_dot_bmax = dot_bmax[batch_indices, idx_min_B]
+    peakiness_dot_bmax = torch.where(mask_alfven, peakiness_dot_bmax, torch.zeros_like(peakiness_dot_bmax))
     b_max_flipscore = calc_sheet_reversal_criterion(B, bmax, search_range=100)
+    b_max_flipscore = torch.where(mask_alfven, b_max_flipscore, torch.zeros_like(b_max_flipscore))
 
-    # （16）b_max梯度的偏度
+    # (17) b_max梯度的偏度
     diff_bmax = bmax[:, 1:] - bmax[:, :-1]
     abs_skew_grad_bmax = get_abs_skewness(diff_bmax)
     abs_skew_grad_bmax = torch.where(mask_alfven, abs_skew_grad_bmax, torch.zeros_like(abs_skew_grad_bmax))
 
 
     # =========================================================================
-    # B. 压缩性结构判据
+    # B. 压缩性结构专属判据 (移除 mask_comp 硬截断，保留物理连续性)
     # =========================================================================
 
-    # (3) b_z和B 扰动凹陷或凸起程度
+    # (2) b_z和B 扰动凹陷或凸起程度
     idx_max_bz = torch.argmax(torch.abs(bz), dim=1)
     bz_dip = bz[batch_indices, idx_max_bz]
     idx_max_B = torch.argmax(torch.abs(B), dim=1)
     B_dip = B[batch_indices, idx_max_B]
     B_dip = torch.where(mask_comp, B_dip, torch.zeros_like(B_dip))
 
-    # (6) 激波指标: b_z 斜率(差分)绝对值的最大值
-    max_grad_bz = torch.max(torch.abs(bz[:, 1:] - bz[:, :-1]), dim=1)[0]
-
-    # (8) 激波判据：b_z最大值的绝对值减最小值的绝对值
+    # (6) 激波判据：b_z最大值的绝对值减最小值的绝对值
     b_z_max_ = torch.max(bz, dim=1)[0]
     b_z_min_ = torch.min(bz, dim=1)[0]
     R_jump = torch.abs(b_z_max_) - torch.abs(b_z_min_) # 接近0：shock；接近1：soliton；接近-1：hole
     R_jump = torch.where(mask_comp, R_jump, torch.zeros_like(R_jump))
 
-    def get_abs_kurtosis(x):
-        mu = torch.mean(x, dim=1, keepdim=True)
-        sigma = torch.std(x, dim=1, keepdim=True)
-        sigma_safe = torch.clamp(sigma, min=0.05)  # 防止噪声放大
-        kurt = torch.mean( ((x - mu) / sigma_safe)**4, dim=1)
-        return kurt
-    
+    # (7) 渐近不对称比: 跃变前后B均值差的绝对值 / 局部噪声 (激波>>1, 磁洞/孤子≈0)
+    dB = torch.abs(B[:, 1:] - B[:, :-1])
+    ramp = torch.argmax(dB, dim=1)  # [N], 0..298
+    idx = torch.arange(300, device=device).unsqueeze(0)  # [1, 300]
+    ramp_col = ramp.unsqueeze(1)  # [N, 1]
+    up_mask = (idx >= ramp_col - 50) & (idx <= ramp_col - 15)
+    dn_mask = (idx >= ramp_col + 15) & (idx <= ramp_col + 50)
+    B_up_mean = (B * up_mask.float()).sum(dim=1) / (up_mask.sum(dim=1).float() + 1e-6)
+    B_dn_mean = (B * dn_mask.float()).sum(dim=1) / (dn_mask.sum(dim=1).float() + 1e-6)
+    jump = torch.abs(B_dn_mean - B_up_mean)
+    # 计算局部std: E[X^2] - E[X]^2
+    B_up_std = torch.sqrt(((B**2 * up_mask.float()).sum(dim=1) / (up_mask.sum(dim=1).float() + 1e-6) - B_up_mean**2).clamp(min=0))
+    B_dn_std = torch.sqrt(((B**2 * dn_mask.float()).sum(dim=1) / (dn_mask.sum(dim=1).float() + 1e-6) - B_dn_mean**2).clamp(min=0))
+    noise = torch.maximum(B_up_std, B_dn_std)
+    asym_B = torch.where(mask_comp, jump / (noise + 1e-6), torch.zeros_like(jump))
+
     # (10) dot_B 的全局峰度 (Kurtosis)
     mean_dot_B = torch.mean(dot_B, dim=1, keepdim=True)
-    kurt_dot_B = get_abs_kurtosis(dot_B)
+    std_dot_B = torch.std(dot_B, dim=1, keepdim=True)
+    kurt_dot_B = torch.mean(((dot_B - mean_dot_B) / (std_dot_B + 1e-6))**4, dim=1) / 10.0
     kurt_dot_B = torch.where(mask_comp, kurt_dot_B, torch.zeros_like(kurt_dot_B))
 
-    # (12) dot_bz 的全局峰度 (Kurtosis)
+    # (11) dot_bz 的全局峰度 (Kurtosis)
     mean_dot_bz = torch.mean(dot_bz, dim=1, keepdim=True)
-    kurt_dot_bz = get_abs_kurtosis(dot_bz)
+    std_dot_bz = torch.std(dot_bz, dim=1, keepdim=True)
+    kurt_dot_bz = torch.mean(((dot_bz - mean_dot_bz) / (std_dot_bz + 1e-6))**4, dim=1) / 10.0
+    kurt_dot_bz = torch.where(mask_comp, kurt_dot_bz, torch.zeros_like(kurt_dot_bz))
 
-    # (13) b_z和b_max穿过 ±0.5 的次数 (反映震荡结构的复杂程度)
+    # (12)(13) b_z和b_max穿过 ±0.5 的次数 (反映震荡结构的复杂程度)
     def calc_criterion_16(bz, threshold=0.5):
         """
         bz: [Batch, Length] 的张量
@@ -422,9 +434,9 @@ def extract_physical_features_batch(data_batch, device):
     complexity_index_bmax = calc_criterion_16(bmax)
 
     # (14) B 场与 tanh 模板的最大相关性
-    def get_max_corr_template(x, y_template, max_shift=50):
+    def get_max_corr_template(x, y_template):
         """
-        计算 batch x 与单个模板 y_template 之间的最大互相关性 (位移无关, 限制在 ±max_shift)
+        计算 batch x 与单个模板 y_template 之间的最大互相关性 (位移无关)
         """
         N_pts = x.size(1)
         # 模板扩展到 batch 大小
@@ -438,19 +450,15 @@ def extract_physical_features_batch(data_batch, device):
         cross_corr = torch.fft.irfft(corr_freq, n=pad_size, dim=1)
         x_energy = torch.sqrt(torch.sum(x_norm**2, dim=1) + 1e-8)
         y_energy = torch.sqrt(torch.sum(y_norm**2, dim=1) + 1e-8)
-        # 限制搜索范围为 ±max_shift，避免无关结构通过极端位移获得虚假高相关
-        pos_indices = torch.arange(0, max_shift + 1, device=x.device)
-        neg_indices = torch.arange(pad_size - max_shift, pad_size, device=x.device)
-        valid_indices = torch.cat([pos_indices, neg_indices])
         # 使用 abs 是为了同时兼容正向和反向的波形 (+/- 符号)
-        max_corr = torch.max(torch.abs(cross_corr[:, valid_indices]), dim=1)[0]
+        max_corr = torch.max(torch.abs(cross_corr), dim=1)[0]
         return max_corr / (x_energy * y_energy + 1e-8)
     t1 = torch.linspace(-100, 100, 300, device=device)
     tanh_template = torch.tanh(t1).unsqueeze(0) # [1, 300]
-    corr_shock_B = get_max_corr_template(B, tanh_template, max_shift=50)
+    corr_shock_B = get_max_corr_template(B, tanh_template)
     corr_shock_B = torch.where(mask_comp, corr_shock_B, torch.zeros_like(corr_shock_B))
 
-    # (15) 梯度（斜率）的偏度 (反映跳变的方向性)
+    # (15)(16) 梯度（斜率）的偏度 (反映跳变的方向性)
     # 激波的斜率分布是单向极值（极度偏斜），震荡结构的斜率分布是对称的（偏度近0）
     diff_B = B[:, 1:] - B[:, :-1]
     diff_bz = bz[:, 1:] - bz[:, :-1]
@@ -458,31 +466,32 @@ def extract_physical_features_batch(data_batch, device):
     abs_skew_grad_bz = get_abs_skewness(diff_bz)
     # 采用压缩性门控
     abs_skew_grad_B = torch.where(mask_comp, abs_skew_grad_B, torch.zeros_like(abs_skew_grad_B))
+    abs_skew_grad_bz = torch.where(mask_comp, abs_skew_grad_bz, torch.zeros_like(abs_skew_grad_bz))
 
     return torch.stack([
-        pol_ratio,
-        comp_index,
-        bz_dip,
-        B_dip,
-        corr_bmax_bmin,
-        dom_freq,
-        max_grad_bz,
-        R_jump,
-        peakiness_dot_bmax,
-        b_max_flipscore,
-        kurt_dot_B,
-        kurt_dot_bz,
-        complexity_index_bz,
-        complexity_index_bmax,
-        corr_shock_B,
-        abs_skew_grad_B,
-        abs_skew_grad_bz,
-        abs_skew_grad_bmax
+        pol_ratio,             # 0
+        comp_index,            # 1
+        bz_dip,                # 2
+        B_dip,                 # 3
+        corr_bmax_bmin,        # 4
+        dom_freq,              # 5
+        R_jump,                # 6
+        asym_B,                # 7
+        peakiness_dot_bmax,    # 8
+        b_max_flipscore,       # 9
+        kurt_dot_B,            # 10
+        kurt_dot_bz,           # 11
+        complexity_index_bz,   # 12
+        complexity_index_bmax, # 13
+        corr_shock_B,          # 14
+        abs_skew_grad_B,       # 15
+        abs_skew_grad_bz,      # 16
+        abs_skew_grad_bmax     # 17
     ], dim=1)
 
 
 # %%
-def physical_contrastive_loss(embeddings, labels, phys_features, margin=2.0, feat_weights=None):
+def physical_contrastive_loss(embeddings, labels, phys_features, margin=1.0, feat_weights=None):
     N = embeddings.size(0)
     device = embeddings.device
 
@@ -595,11 +604,13 @@ def train_autoencoder(model, train_dataloader, val_dataloader, proto_dataloader,
             
             optimizer.zero_grad()
             
-            # --- A. 重建 + 编码 (一次 forward，省掉重复 encode) ---
-            output, z_x = model(x, return_embedding=True)
+            # --- A. 重建 ---
+            output = model(x)
             mse_per_channel = calc_invariant_mse(output, x, max_shift=max_shift)
             weighted_errs = (mse_per_channel * loss_weights) / 4.0
 
+            # --- B. 编码 (对比路径独立 encode，避免 MSE 梯度干扰对比梯度) ---
+            z_x = model.encode(x)
             z_p = model.encode(p_data)
             
             loss_rec = (1 - current_lambda) * weighted_errs.sum()
@@ -637,7 +648,7 @@ def train_autoencoder(model, train_dataloader, val_dataloader, proto_dataloader,
                 vx, vx_phys = v_batch_item
                 vx, vx_phys = vx.to(device), vx_phys.to(device)
                 
-                v_output, vz_x = model(vx, return_embedding=True)
+                v_output = model(vx)
                 v_mse_per_channel = calc_invariant_mse(v_output, vx, max_shift=max_shift)
                 v_weighted_errs = (v_mse_per_channel * loss_weights) / 4.0
                 total_val_rec_loss += v_weighted_errs.sum().item()
@@ -646,6 +657,7 @@ def train_autoencoder(model, train_dataloader, val_dataloader, proto_dataloader,
                 vp_data, vp_labels, vp_phys = next(val_proto_iter)
                 vp_data, vp_labels, vp_phys = vp_data.to(device), vp_labels.to(device), vp_phys.to(device)
 
+                vz_x = model.encode(vx)
                 vz_p = model.encode(vp_data)
                 
                 v_comb_emb = torch.cat([vz_x, vz_p], dim=0)
@@ -703,10 +715,6 @@ def train_autoencoder(model, train_dataloader, val_dataloader, proto_dataloader,
 workspace = '..\\'
 trainset_path = os.path.join(workspace, 'trainset')
 samples_path = os.path.join(workspace, 'samples_clean')
-
-# 创建图片输出目录
-img_dir = os.path.join(workspace, 'output', 'images', 'eu')
-os.makedirs(img_dir, exist_ok=True)
 
 # --- 1. 加载数据 ---
 data_all_processed, data_all_raw, data_all_files = load_data(trainset_path)
@@ -779,8 +787,8 @@ proto_dataloader = DataLoader(proto_dataset, batch_size=128, shuffle=True, pin_m
 model = BiAutoencoder(input_size=4, cnn_channels=16, hidden_size=128, num_layers=2, latent_dim=64).to(device)
 print(f"Starting Autoencoder training on {device}...")
 torch.cuda.empty_cache()
-# 特征权重: comp_index(索引1) ×3, 确保Alfvénic/压缩性不混淆 (索引见CLAUDE.md特征表)
-feat_weights = torch.tensor([1., 3., 1., 1., 1., 1., 1., 1., 1., 1., 1., 1., 1., 1., 1., 1., 1., 1.])
+# 特征权重 (索引见CLAUDE.md特征表)
+feat_weights = torch.tensor([1., 1., 1., 1., 1., 1., 1., 1., 1., 1., 1., 1., 1., 1., 1., 1., 1., 1.])
 
 train_loss_list, val_loss_list, all_train_loss_list, all_val_loss_list = train_autoencoder(
     model, train_dataloader, val_dataloader, proto_dataloader, device,
@@ -795,6 +803,13 @@ train_loss_list, val_loss_list, all_train_loss_list, all_val_loss_list = train_a
 # ## loss曲线
 
 # %%
+# 保存loss图片
+# 同一轮训练的所有输出保存在同一个时间戳文件夹
+import datetime
+timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+img_dir = os.path.join(workspace, 'output', 'images', timestamp)
+os.makedirs(img_dir, exist_ok=True)
+
 fig = plt.figure(figsize=(8, 4))
 plt.plot(train_loss_list, label='Train Loss')
 plt.plot(val_loss_list, label='Validation Loss')
@@ -803,6 +818,8 @@ plt.ylabel('Loss')
 plt.title('Training and Validation Loss')
 plt.legend()
 plt.grid(True, linestyle='--', alpha=0.7)
+loss_path = os.path.join(img_dir, 'loss_all.png')
+fig.savefig(loss_path, dpi=150, bbox_inches='tight')
 plt.show()
 
 all_train_loss_array = np.array(all_train_loss_list)
@@ -811,74 +828,42 @@ all_val_loss_array = np.array(all_val_loss_list)
 fig = plt.figure(figsize=(8, 4))
 all_train_mse_loss = np.sum([all_train_loss_array[i] for i in range(4)], axis=0)
 plt.plot(all_train_mse_loss, label='Train Loss MSE')
-plt.plot(all_train_loss_array[4], label='Train Loss Contrastive')
 plt.plot(all_train_loss_array[0], label='Train Loss B')
 plt.plot(all_train_loss_array[1], label='Train Loss b_z')
 plt.plot(all_train_loss_array[2], label='Train Loss b_max')
 plt.plot(all_train_loss_array[3], label='Train Loss b_min')
+plt.plot(all_train_loss_array[4], label='Train Loss Contrastive')
 plt.xlabel('Epoch')
 plt.ylabel('Loss')
 plt.title('Training Loss')
 plt.legend()
 plt.grid(True, linestyle='--', alpha=0.7)
+loss_path = os.path.join(img_dir, 'loss_train.png')
+fig.savefig(loss_path, dpi=150, bbox_inches='tight')
 plt.show()
-
 
 fig = plt.figure(figsize=(8, 4))
 all_val_mse_loss = np.sum([all_val_loss_array[i] for i in range(4)], axis=0)
 plt.plot(all_val_mse_loss, label='Validation Loss MSE')
-plt.plot(all_val_loss_array[4], label='Validation Loss Contrastive')
 plt.plot(all_val_loss_array[0], label='Validation Loss B')
 plt.plot(all_val_loss_array[1], label='Validation Loss b_z')
 plt.plot(all_val_loss_array[2], label='Validation Loss b_max')
 plt.plot(all_val_loss_array[3], label='Validation Loss b_min')
+plt.plot(all_val_loss_array[4], label='Validation Loss Contrastive')
 plt.xlabel('Epoch')
 plt.ylabel('Loss')
 plt.title('Validation Loss')
 plt.legend()
 plt.grid(True, linestyle='--', alpha=0.7)
+loss_path = os.path.join(img_dir, 'loss_val.png')
+fig.savefig(loss_path, dpi=150, bbox_inches='tight')
 plt.show()
-
-
-# 保存loss到../output/loss_当前时间.csv，第一行为labels，第一列为epoch，后续列为各项loss
-import datetime
-import csv
-timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-loss_csv_path = os.path.join(workspace, 'output', f'loss_{timestamp}.csv')
-if not os.path.exists(os.path.dirname(loss_csv_path)):
-    os.makedirs(os.path.dirname(loss_csv_path))
-labels = ['Epoch', 'Train Loss', 'Validation Loss', 'Train Loss MSE', 'Validation Loss MSE', 'Train Loss Contrastive', 'Validation Loss Contrastive', 'Train Loss B', 'Validation Loss B', 'Train Loss b_z', 'Validation Loss b_z', 'Train Loss b_max', 'Validation Loss b_max', 'Train Loss b_min', 'Validation Loss b_min']
-with open(loss_csv_path, mode='w', newline='') as f:
-    writer = csv.writer(f)
-    writer.writerow(labels)
-    for i in range(len(train_loss_list)):
-        row = [
-            i+1, 
-            train_loss_list[i], 
-            val_loss_list[i], 
-            all_train_mse_loss[i], 
-            all_val_mse_loss[i], 
-            all_train_loss_array[4][i], 
-            all_val_loss_array[4][i],
-            all_train_loss_array[0][i],
-            all_val_loss_array[0][i],
-            all_train_loss_array[1][i],
-            all_val_loss_array[1][i],
-            all_train_loss_array[2][i],
-            all_val_loss_array[2][i],
-            all_train_loss_array[3][i],
-            all_val_loss_array[3][i]
-        ]
-        writer.writerow(row)
 
 
 # %% [markdown]
 # ## 预测
 
 # %%
-import numpy as np
-import torch
-import pandas as pd
 from scipy.spatial.distance import cdist, pdist, squareform
 from torch.utils.data import DataLoader, TensorDataset
 
@@ -981,15 +966,30 @@ np.save(os.path.join(workspace, 'proto_emb.npy'), final_proto_emb)
 np.save(os.path.join(workspace, 'target_pts.npy'), np.array([target_pts]))
 np.save(os.path.join(workspace, 'thresholds.npy'), thresholds)
 
+# 保存输出到 output/train_result/{timestamp}/
+result_dir = os.path.join(workspace, 'output', 'train_result', timestamp)
+os.makedirs(result_dir, exist_ok=True)
+
 print("-" * 35)
 import pandas as pd
 stats = pd.Series(predictions).value_counts()
 total = len(predictions)
+lines = []
 for cls, count in stats.items():
     percentage = (count / total) * 100
-    print(f"Cluster: {cls:<15} | Num: {count:<6} | Percent: {percentage:>6.2f}%")
+    line = f"Cluster: {cls:<15} | Num: {count:<6} | Percent: {percentage:>6.2f}%"
+    print(line)
+    lines.append(line)
 print("-" * 35)
 print(f"Total Samples: {total}")
+lines.append("-" * 35)
+lines.append(f"Total Samples: {total}")
+
+# 写入文件
+result_path = os.path.join(result_dir, 'classification.txt')
+with open(result_path, 'w', encoding='utf-8') as f:
+    f.write('\n'.join(lines))
+print(f"\nClassification results saved to: {result_path}")
 
 # %% [markdown]
 # ### TSNE图
@@ -1070,10 +1070,12 @@ def plot_tsne(model, test_loader, prototypes_pad, predictions, device):
     plt.legend()
     plt.grid(True, linestyle='--', alpha=0.3)
     plt.tight_layout()
-    
+    tsne_path = os.path.join(img_dir, 'tsne.png')
+    plt.savefig(tsne_path, dpi=150, bbox_inches='tight')
+    plt.show()
+
 test_dataloader = DataLoader(TimeSeriesDataset(X_test_pad), batch_size=128, shuffle=False, num_workers=0)
-plot_tsne(model.to(device), test_dataloader, prototypes_pad, predictions, device)
-plt.show() 
+plot_tsne(model.to(device), test_dataloader, prototypes_pad, predictions, device) 
 
 
 # %% [markdown]
@@ -1083,36 +1085,39 @@ plt.show()
 import numpy as np
 import matplotlib.pyplot as plt
 
-def verify_top_k_samples(test_embeddings, test_data_raw, test_files, proto_embs_dict, k=5):
+def verify_top_k_samples(test_embeddings, test_data_raw, test_files, proto_embs_dict,
+                         predictions=None, thresholds=None, k=5, save=False, set='test'):
     """
     可视化测试集中离每个范本中心最近的 K 个原始波形。
-    并在标题显示该样本实际距离最近的类别（用于检查是否有跨类竞争）。
+    标题显示: 模型预测类别 vs 最近邻类别，红色=不一致。
     """
-    # 提取所有类名和中心，方便后续做全局对比
     all_class_names = list(proto_embs_dict.keys())
     all_centers = np.array([proto_embs_dict[name] for name in all_class_names])
 
+    # 构建索引→预测类别的映射 (如果提供了 predictions)
+    pred_map = None
+    if predictions is not None:
+        pred_map = {i: predictions[i] for i in range(len(predictions))}
+
     for cls_name, proto_center in proto_embs_dict.items():
-        # 1. 计算所有测试样本到当前类中心的距离
         distances = np.linalg.norm(test_embeddings - proto_center, axis=1)
-        
-        # 2. 找到距离最近的 K 个样本
         closest_indices = np.argsort(distances)[:k]
         
-        # 3. 创建画布
         fig, axes = plt.subplots(2, k, figsize=(5*k, 8))
         fig.suptitle(f'Top {k} Matches for Prototype Class: {cls_name.upper()}', 
                      fontsize=18, fontweight='bold', y=1.02)
         
         for j, idx in enumerate(closest_indices):
-            # --- 新增逻辑：计算该样本真正最近的类 ---
             sample_emb = test_embeddings[idx]
-            # 计算该样本到所有范本中心的距离
             all_dists = np.linalg.norm(all_centers - sample_emb, axis=1)
-            # 找到距离最近的索引
             nearest_cls_idx = np.argmin(all_dists)
             nearest_cls_name = all_class_names[nearest_cls_idx]
-            # ---------------------------------------
+            
+            # 模型实际预测类别
+            if pred_map is not None:
+                model_pred = pred_map[idx]  # 可能是 'neither'
+            else:
+                model_pred = None
 
             seq = test_data_raw[idx]
             file_num = test_files[idx]
@@ -1125,26 +1130,28 @@ def verify_top_k_samples(test_embeddings, test_data_raw, test_files, proto_embs_
             max_idx = np.argmax(b_sum_sq)
             min_idx = np.argmin(B)
             
-            # 处理 axes 维度 (当 k=1 时)
             ax_top = axes[0, j] if k > 1 else axes[0]
             ax_btm = axes[1, j] if k > 1 else axes[1]
 
-            # --- 第一行：总磁场 B ---
             ax_top.plot(B, color='black', linewidth=1.5)
             ax_top.axhline(np.mean(B), color='gray', linestyle='--', alpha=0.6)
             ax_top.axvline(max_idx, color='red', linestyle='--', alpha=0.4)
             ax_top.axvline(min_idx, color='green', linestyle='--', alpha=0.4)
 
-            # 标题包含距离、文件名以及最近的类别
-            # 如果 nearest_cls_name 不等于 cls_name，说明该样本在分类时会被分给别的类
-            title_color = 'black' if nearest_cls_name == cls_name else 'red'
-            ax_top.set_title(f'Dist: {distances[idx]:.3f} - {file_num}\nNearest Cls: {nearest_cls_name}', 
+            # 标题: 模型预测 vs 最近邻
+            if model_pred is not None:
+                pred_str = f"Pred: {model_pred} | NN: {nearest_cls_name}"
+            else:
+                pred_str = f"NN: {nearest_cls_name}"
+            
+            # 红色 = 模型的预测结果与当前原型不一致
+            title_color = 'black' if (model_pred == cls_name) else 'red'
+            ax_top.set_title(f'Dist: {distances[idx]:.3f} - {file_num}\n{pred_str}', 
                              fontsize=11, color=title_color)
             
             if j == 0:
                 ax_top.set_ylabel('B', fontsize=12, fontweight='bold')
             
-            # --- 第二行：扰动三分量 b ---
             ax_btm.plot(b_z, label='b_z', color='blue', alpha=0.8)
             ax_btm.plot(b_max, label='b_max', color='red', alpha=0.8)
             ax_btm.plot(b_min, label='b_min', color='green', alpha=0.8)
@@ -1160,19 +1167,38 @@ def verify_top_k_samples(test_embeddings, test_data_raw, test_files, proto_embs_
             ax_btm.set_xlabel('Time Step')
 
         plt.tight_layout()
+        if save:
+            save_path = os.path.join(img_dir, f'{set}_{cls_name}.png')
+            fig.savefig(save_path, dpi=150, bbox_inches='tight')
         plt.show()
+
 
 
 # %%
 import torch
 from torch.utils.data import DataLoader
+from scipy.spatial.distance import cdist
+
+def classify_by_thresholds(embeddings, proto_embs_dict, thresholds):
+    """根据最近邻+阈值对 embeddings 分类，返回 predictions 列表"""
+    class_names = list(proto_embs_dict.keys())
+    centers = np.array([proto_embs_dict[cls] for cls in class_names])
+    dists = cdist(embeddings, centers, metric='euclidean')
+    nearest_idx = np.argmin(dists, axis=1)
+    nearest_dists = np.min(dists, axis=1)
+    
+    predictions = []
+    for i in range(len(embeddings)):
+        cls = class_names[nearest_idx[i]]
+        if cls in thresholds and nearest_dists[i] <= thresholds[cls]:
+            predictions.append(cls)
+        else:
+            predictions.append('neither')
+    return predictions
+
 
 def extract_embeddings_sequentially(model, padded_data, device, batch_size=128):
-    """
-    为了保证索引对齐，必须使用 shuffle=False
-    """
     model.eval()
-    # 临时构建一个顺序加载器
     temp_dataset = TimeSeriesDataset(padded_data)
     temp_loader = DataLoader(temp_dataset, batch_size=batch_size, shuffle=False)
     
@@ -1183,23 +1209,20 @@ def extract_embeddings_sequentially(model, padded_data, device, batch_size=128):
             all_embs.append(emb)
     return np.vstack(all_embs)
 
-# --- 2. 准备所有数据集的 Raw 数据和文件名 (补全训练集和验证集部分) ---
-# 注意：切片范围必须与主程序中的划分严格一致
+# --- 准备所有数据集的 Raw 数据和文件名 ---
 train_data_raw = data_all_raw[:train_size]
 train_files = data_all_files[:train_size]
 
 val_data_raw = data_all_raw[train_size : train_size + val_size]
 val_files = data_all_files[train_size : train_size + val_size]
 
-# test_data_raw 和 test_files 你主程序里已经切好了
-
-# --- 3. 顺序提取所有集合的 Embeddings ---
+# --- 顺序提取所有集合的 Embeddings ---
 print("Extracting aligned embeddings for all splits...")
 train_embs = extract_embeddings_sequentially(model, X_train_pad, device)
 val_embs = extract_embeddings_sequentially(model, X_val_pad, device)
 test_embs = extract_embeddings_sequentially(model, X_test_pad, device)
 
-# --- 4. 计算类中心 (Anchors) ---
+# --- 计算类中心 ---
 proto_embs_dict = {}
 for cls_name, seqs in prototypes_pad.items():
     seqs_tensor = torch.tensor(seqs, dtype=torch.float32).to(device)
@@ -1207,14 +1230,19 @@ for cls_name, seqs in prototypes_pad.items():
         emb = model.encode(seqs_tensor).cpu().numpy()
         proto_embs_dict[cls_name] = np.mean(emb, axis=0)
 
-# --- 5. 执行可视化 ---
+# --- 为 train/val 生成 predictions (test 已在主程序中通过 test_clustering 生成) ---
+train_preds = classify_by_thresholds(train_embs, proto_embs_dict, thresholds)
+val_preds = classify_by_thresholds(val_embs, proto_embs_dict, thresholds)
+
+# --- 执行可视化 ---
 
 print("\n--- Visualizing TOP-K Matches in TRAINING SET ---")
 verify_top_k_samples(
     test_embeddings=train_embs, 
     test_data_raw=train_data_raw, 
     test_files=train_files,
-    proto_embs_dict=proto_embs_dict, 
+    proto_embs_dict=proto_embs_dict,
+    predictions=train_preds,
     k=10
 )
 
@@ -1223,7 +1251,8 @@ verify_top_k_samples(
     test_embeddings=val_embs, 
     test_data_raw=val_data_raw, 
     test_files=val_files,
-    proto_embs_dict=proto_embs_dict, 
+    proto_embs_dict=proto_embs_dict,
+    predictions=val_preds,
     k=10
 )
 
@@ -1232,9 +1261,13 @@ verify_top_k_samples(
     test_embeddings=test_embs, 
     test_data_raw=test_data_raw, 
     test_files=test_files,
-    proto_embs_dict=proto_embs_dict, 
-    k=10
+    proto_embs_dict=proto_embs_dict,
+    predictions=predictions,
+    k=10,
+    save=True, 
+    set='test'
 )
+
 
 # %% [markdown]
 # ### 每个种类绘制距离分布直方图

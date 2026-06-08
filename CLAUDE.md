@@ -21,17 +21,19 @@ All code lives in Jupyter notebooks. There is no `setup.py`, `requirements.txt`,
 
 ## Architecture decisions that matter
 
-- **No contrastive warmup**: `start_lambda_contrastive = max_lambda_contrastive = 0.1`. Warmup caused the decoder to lock into a reconstruction-only latent space; contrastive loss couldn't recover. Both losses co-evolve from epoch 0.
+- **No contrastive warmup**: `start_lambda_contrastive = max_lambda_contrastive = 0.05`. Both losses co-evolve from epoch 0.
 - **Normalization in `load_data`**: B channel centered then divided by max; perturbations divided by global max. This is a linear transform — required for balanced MSE channels, harmless for cosine distance.
 - **`max_shift=50` in `calc_invariant_mse`**: Intentional large tolerance for translation+reflection invariance (structures aren't centered in the time window).
 - **Physical features**: 18 features computed by `extract_physical_features_batch` (see table below). Gating masks (`mask_alfven` / `mask_comp`) zero out irrelevant features per structure type. Features are z-score normalized inside `physical_contrastive_loss` and used for pair-masking via similarity thresholds (<0.8 similar, >4.0 dissimilar).
 - **Classification**: Prototype-center nearest-neighbor with per-class dynamic thresholds (`mean + n_std * std`). Unknown/noise samples assigned `'neither'` if distance exceeds threshold.
-- **Training data**: 48,573 parquet files from `trainset_*` folders. Only prototypes (31 raw × 2 augmented = 62) have labels. Training samples are unlabeled (`labels = -1` in contrastive loss).
-- **Test data has no labels** — evaluation is qualitative (t-SNE, top-K waveform inspection, distance histograms).
+- **Training data**: ~70k parquet files from `trainset/` (2023–2024, 2 days selected per month). Much more diverse than the original Jan-2024-only dataset (~49k files). Loss values are NOT comparable between old and new datasets. Only prototypes (31 raw × 2 augmented = 62) have labels. Training samples are unlabeled (`labels = -1` in contrastive loss).
+- **Output images**: All outputs from one training run go to `output/images/{timestamp}/` (loss curves, t-SNE). Loss CSV export removed — evaluation uses saved images.
+- **Test data has no labels** — evaluation is qualitative (t-SNE, random waveform inspection via `plot_class_samples`, distance histograms).
+- **`plot_class_samples`** in prediction notebook: Random sampling with fixed `seed=42` for reproducible manual verification. Signature: `plot_class_samples(target_class, total_count=100, per_fig=10, seed=42)`.
 
 ## Data format
 
-Each `.parquet` file is a time series with columns: `B`, `b_z`, `b_max`, `b_min`. Prototype samples live in `samples_clean/<class_name>/`. Training data in `trainset_*` folders (git-ignored). Adding a new class requires: (1) folder in `samples_clean`, (2) add name to `classes` list in training notebooks.
+Each `.parquet` file is a time series with columns: `B`, `b_z`, `b_max`, `b_min`. Prototype samples live in `samples_clean/<class_name>/`. Training data in `trainset/` folder (git-ignored). Adding a new class requires: (1) folder in `samples_clean`, (2) add name to `classes` list in training notebooks.
 
 ## Model I/O convention
 
@@ -42,7 +44,7 @@ Each `.parquet` file is a time series with columns: `B`, `b_z`, `b_max`, `b_min`
 
 ## Physical feature groups (18 features, 0-indexed)
 
-Features computed by `extract_physical_features_batch` and returned in fixed order. Comments in code use 0-based indices matching the return order for direct cross-reference with `alfven_indices`.
+Features computed by `extract_physical_features_batch` and returned in fixed order. Comments in code use 0-based indices matching the return order.
 
 | idx | feature | group | gate |
 | --- | --- | --- | --- |
@@ -52,30 +54,30 @@ Features computed by `extract_physical_features_batch` and returned in fixed ord
 | 3 | B_dip | Compressible | mask_comp |
 | 4 | corr_bmax_bmin | Alfven | mask_alfven |
 | 5 | dom_freq | Alfven | mask_alfven |
-| 6 | max_grad_bz | Compressible | — |
-| 7 | R_jump | Compressible | mask_comp |
-| 8 | peakiness_dot_bmax | Alfven | — |
-| 9 | b_max_flipscore | Alfven | — |
+| 6 | R_jump | Compressible | mask_comp |
+| 7 | asym_B | Compressible | mask_comp |
+| 8 | peakiness_dot_bmax | Alfven | mask_alfven |
+| 9 | b_max_flipscore | Alfven | mask_alfven |
 | 10 | kurt_dot_B | Compressible | mask_comp |
-| 11 | kurt_dot_bz | Compressible | — |
+| 11 | kurt_dot_bz | Compressible | mask_comp |
 | 12 | complexity_index_bz | Compressible | — |
 | 13 | complexity_index_bmax | Alfven | — |
 | 14 | corr_shock_B | Compressible | mask_comp |
 | 15 | abs_skew_grad_B | Compressible | mask_comp |
-| 16 | abs_skew_grad_bz | Compressible | — |
+| 16 | abs_skew_grad_bz | Compressible | mask_comp |
 | 17 | abs_skew_grad_bmax | Alfven | mask_alfven |
 
-`alfven_indices = [0, 4, 5, 8, 9, 13, 17]` — used by `extract_physical_features_batch` for gate assignment. Alfven features are gated by `mask_alfven` (`comp_index < 1`), compressible features by `mask_comp` (`comp_index > 0.5`).
+Gate summary: 4 unmasked features (—): comp_index, bz_dip, complexity_index_bz, complexity_index_bmax. 14 gated features. `asym_B` (idx 7): local asymmetry ratio = |⟨B_up⟩ - ⟨B_down⟩| / noise_std around the max gradient point (ramp ± [15,50] windows). Shock has permanent step change (>>1), holes/solitons return to baseline (≈0). Critical for distinguishing shock from other compressible structures.
 
-`int_dot_bz_window` (formerly index ~11) was removed — its computation code is deleted, not just commented out.
+`int_dot_bz_window` and `max_grad_bz` were removed — their computation code is deleted, not just commented out.
 
-`—` means no gating mask: these features have intrinsic values that naturally distinguish Alfvenic from compressible structures without artificial zeroing. For example, `bz_dip` is inherently near zero for Alfvenic structures; `peakiness_dot_bmax` is near zero for compressible structures. Adding masks creates unnecessary sparsity that causes contrastive loss overfitting. Features WITH masks are those where raw values have no physical meaning across groups (e.g., `pol_ratio` is meaningless for compressible structures).
+## Physical contrastive loss design
 
-The contrastive loss (`physical_contrastive_loss` in cell `e54b11c5`) is a plain function with NO learnable weights. Physical features are z-score normalized, then Euclidean distance in physical space gates positive/negative pairs (thresholds: <0.8 similar, >4.0 dissimilar). This is intentionally simple — learnable feature weights were attempted but introduced instability without proportional benefit.
+`physical_contrastive_loss` is a plain function with NO learnable weights. Per-batch z-score normalization → weighted Euclidean distance (see below) → pair gating (thresholds: <0.8 similar, >4.0 dissimilar).
 
-`int_dot_bz_window` (formerly index ~11) was removed — its computation code is deleted, not just commented out.
+**Feature weights**: `comp_index` (idx 1) has fixed weight ×3 applied via `feat_weights` parameter. Weights are multiplied as `sqrt(w)` on normalized features before `cdist`, so comp_index contributes 3× variance to the physical distance. This enforces the Alfvénic/compressible boundary in pair selection.
 
-The contrastive loss (`physical_contrastive_loss` in cell `e54b11c5`) is a plain function with NO learnable weights. Physical features are z-score normalized, then Euclidean distance in physical space gates positive/negative pairs (thresholds: <0.8 similar, >4.0 dissimilar). This is intentionally simple — learnable feature weights were attempted but introduced instability without proportional benefit.
+**Skewness/kurtosis**: Sigma-normalized with floor (`clamp(sigma, min=0.05)`) to prevent noise amplification in flat signals while preserving amplitude invariance (shape-only measurement). `get_abs_kurtosis` additionally divides by 10 to compress shock's extreme kurtosis values.
 
 ## Environment
 

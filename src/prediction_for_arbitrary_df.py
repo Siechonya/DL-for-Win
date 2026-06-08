@@ -185,7 +185,7 @@ predictor = PhysicalPredictor(
 )
 
 # 加载数据
-test_df = pd.read_parquet(os.path.join(workspace, 'trainset', '67578.parquet'))
+test_df = pd.read_parquet(os.path.join(workspace, 'trainset', '59914.parquet'))
 
 # 获取预测
 label, dist, details, is_neither = predictor.predict(test_df)
@@ -273,7 +273,7 @@ def run_batch_predictions(predictor, data_dir, fraction=0.1, seed=42, batch_log=
 data_dir = os.path.join(workspace, 'testset')
 
 test_data_raw, test_files, test_embeddings, predictions = run_batch_predictions(
-    predictor, data_dir, fraction=0.1, seed=123
+    predictor, data_dir, fraction=0.2, seed=123
 )
 train_size = 0   # 预测 notebook 无训练/验证划分
 val_size = 0
@@ -345,52 +345,75 @@ plot_distance_histograms(
     max_dist=20
 )
 
+
+# %% [markdown]
+# ### t-SNE 可视化
+
 # %%
-# --- neither 样本的近邻类别饼图 ---
-from scipy.spatial.distance import cdist as _neither_pie_cdist
+from sklearn.manifold import TSNE
 
-_neither_pie_centers = np.array(list(final_proto_emb.values()))
-_neither_pie_names = list(final_proto_emb.keys())
-_neither_pie_indices = [i for i, p in enumerate(predictions) if p == 'neither']
-_neither_pie_embs = test_embeddings[_neither_pie_indices]
-_neither_pie_dists = _neither_pie_cdist(_neither_pie_embs, _neither_pie_centers, metric='euclidean')
-_neither_pie_nearest = np.argmin(_neither_pie_dists, axis=1)
-_neither_pie_counts = pd.Series([_neither_pie_names[j] for j in _neither_pie_nearest]).value_counts()
+# 1. 提取所有原型 embedding
+unique_classes = list(final_proto_emb.keys())
+proto_vecs = np.array([final_proto_emb[cls] for cls in unique_classes])
 
-fig, ax = plt.subplots(figsize=(8, 8))
-ax.pie(_neither_pie_counts.values, labels=_neither_pie_counts.index, autopct='%1.1f%%',
-       colors=plt.cm.tab10.colors[:len(_neither_pie_counts)])
-ax.set_title(f"neither samples' (N={len(_neither_pie_indices)}) nearest prototype distribution", fontsize=14, fontweight='bold')
+# 2. 合并数据并降维
+all_vecs = np.vstack([test_embeddings, proto_vecs])
+print("Running t-SNE dimensionality reduction...")
+tsne = TSNE(n_components=2, perplexity=30, random_state=42)
+vecs_2d = tsne.fit_transform(all_vecs)
+
+test_2d = vecs_2d[:len(test_embeddings)]
+proto_2d = vecs_2d[len(test_embeddings):]
+
+# 3. 颜色映射
+colors_list = ['red', 'blue', 'green', 'orange', 'purple', 'cyan', 'magenta', 'brown']
+color_map = {cls: colors_list[i % len(colors_list)] for i, cls in enumerate(unique_classes)}
+color_map['neither'] = 'lightgrey'
+
+point_colors = [color_map.get(p, 'lightgrey') for p in predictions]
+
+# 4. 绘图
+plt.figure(figsize=(14, 10))
+plt.scatter(test_2d[:, 0], test_2d[:, 1], c=point_colors, alpha=0.3, s=4, label='Classified Samples')
+
+for i, cls in enumerate(unique_classes):
+    plt.scatter(proto_2d[i, 0], proto_2d[i, 1],
+                color=color_map[cls], linewidth=1,
+                s=150, label=f'Proto: {cls}', marker='*')
+    plt.text(proto_2d[i, 0] + 1, proto_2d[i, 1] + 1,
+             cls, fontsize=12, fontweight='bold', color=color_map[cls])
+
+plt.title('t-SNE Visualization: Predicted Clusters vs Prototypes (Test Set)')
+plt.legend()
+plt.grid(True, linestyle='--', alpha=0.3)
+plt.tight_layout()
 plt.show()
 
-del _neither_pie_cdist, _neither_pie_centers, _neither_pie_names, _neither_pie_indices, _neither_pie_embs
-del _neither_pie_dists, _neither_pie_nearest, _neither_pie_counts
-
 
 # %%
-def plot_class_samples(target_class, start_offset, total_count=100, per_fig=10):
+def plot_class_samples(target_class, total_count=100, per_fig=10, seed=42):
     """
-    绘制指定预测类别的测试集样本
+    随机抽取指定预测类别的测试集样本 (固定随机种子保证可复现)
     """
+    import random
+    rng = random.Random(seed)
+
     class_indices = [i for i, pred in enumerate(predictions) if pred == target_class]
-    
+
     if not class_indices:
         print(f"在预测结果中没有找到类别: {target_class}")
         return
-    
-    target_proto_center = final_proto_emb.get(target_class)
-    selected_subset = class_indices[start_offset : start_offset + total_count]
-    
-    if not selected_subset:
-        print(f"起始索引 {start_offset} 超出该类别样本总数 ({len(class_indices)})")
-        return
 
+    target_proto_center = final_proto_emb.get(target_class)
+    n_sample = min(total_count, len(class_indices))
+    selected_subset = rng.sample(class_indices, n_sample)
+    
     for i in range(0, len(selected_subset), per_fig):
         batch_indices = selected_subset[i : i + per_fig]
         current_n = len(batch_indices)
-        
+
         fig, axes = plt.subplots(2, current_n, figsize=(5 * current_n, 8))
-        fig.suptitle(f"Class: {target_class.upper()} | Samples {start_offset + i} to {start_offset + i + current_n}", 
+        fig.suptitle(f"Class: {target_class.upper()} | Random {i+1}-{i+current_n} of {n_sample} (seed={seed})",
                      fontsize=16, fontweight='bold', y=1.05)
 
         for j, idx in enumerate(batch_indices):
@@ -436,20 +459,20 @@ def plot_class_samples(target_class, start_offset, total_count=100, per_fig=10):
         plt.show()
 
 
-# 绘制 shock 类的前 100 个样本
-plot_class_samples(target_class='shock', start_offset=0, total_count=100, per_fig=10)
+# 绘制 shock 类的随机 100 个样本 (seed=42 保证可复现)
+# plot_class_samples(target_class='shock', total_count=100, per_fig=10, seed=42)
 # print("-------------------------------")
-# plot_class_samples(target_class='sheet', start_offset=0, total_count=100, per_fig=10)
+# plot_class_samples(target_class='sheet', total_count=100, per_fig=10, seed=42)
 # print("-------------------------------")
-# plot_class_samples(target_class='hole', start_offset=0, total_count=100, per_fig=10)
+# plot_class_samples(target_class='hole', total_count=100, per_fig=10, seed=42)
 # print("-------------------------------")
-# plot_class_samples(target_class='soliton', start_offset=0, total_count=100, per_fig=10)
+# plot_class_samples(target_class='soliton', total_count=100, per_fig=10, seed=42)
 # print("-------------------------------")
-# plot_class_samples(target_class='c vortex', start_offset=0, total_count=100, per_fig=10)
+plot_class_samples(target_class='c vortex', total_count=100, per_fig=10, seed=42)
 # print("-------------------------------")
-# plot_class_samples(target_class='l vortex', start_offset=0, total_count=100, per_fig=10)
+# plot_class_samples(target_class='l vortex', total_count=100, per_fig=10, seed=42)
 # print("-------------------------------")
-# plot_class_samples(target_class='vortex chain', start_offset=0, total_count=100, per_fig=10)
+# plot_class_samples(target_class='vortex chain', total_count=100, per_fig=10, seed=42)
 
 
 # %%

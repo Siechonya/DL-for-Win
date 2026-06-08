@@ -28,7 +28,11 @@ def draw_samples(samples_path, cluster, num=None, save=False):
     df = pd.read_parquet(path)
     
     fig, axes = plt.subplots(2, 1, figsize=(4, 8))
-    UT = pd.to_datetime(df['UT'], format='%Y-%m-%d %H:%M:%S.%f')
+    try:
+        UT = pd.to_datetime(df['UT'], format='%Y-%m-%d %H:%M:%S.%f')
+    except:
+        UT = None
+        print(f"Warning: {path} UT missing")
     B = df['B'].values
     b_z = df['b_z'].values
     b_max = df['b_max'].values
@@ -93,7 +97,7 @@ def draw_samples(samples_path, cluster, num=None, save=False):
         
         return B, b_z, b_max, b_min
 
-    # B, b_z, b_max, b_min = gau(B, b_z, b_max, b_min, sigma=30, l=140, r=157)
+    B, b_z, b_max, b_min = gau(B, b_z, b_max, b_min, sigma=15, l=140, r=157)
 
     if cluster == 'sheet' or cluster == 'hole':
         min_idx = np.argmin(B)
@@ -121,7 +125,9 @@ def draw_samples(samples_path, cluster, num=None, save=False):
         df.to_parquet(os.path.join('..\\samples_clean', cluster, num), index=False)
 
 workspace = '..\\'
-draw_samples(os.path.join(workspace, 'samples'), cluster='shock', num='7.parquet', save=True)
+# draw_samples(os.path.join(workspace, 'samples'), cluster='shock', num='4.parquet', save=True)
+# draw_samples(os.path.join(workspace, 'samples_clean'), cluster='shock', num='4.parquet', save=False)    
+
 
 # %%
 import pandas as pd
@@ -377,22 +383,23 @@ def extract_physical_features_batch(data_batch, device):
     bperp_sq_max = torch.max(bmax**2 + bmin**2, dim=1)[0]
     comp_index = torch.sqrt(bz_sq_max / (bperp_sq_max + 1e-6))
     
-    # 定义物理门控掩码 (软门控: 中间压缩性结构[0.5~1]两组特征全激活)
-    mask_alfven = comp_index < 1       # 阿尔芬结构门控
-    mask_comp = comp_index > 0.5  # 压缩性结构门控
+    # 定义物理门控掩码 (仅保留阿尔芬结构的硬门控)
+    mask_alfven = comp_index < 1.0     # 阿尔芬结构门控
+    mask_comp = comp_index > 0.5     # 压缩性结构门控
 
     def get_abs_skewness(x):
+        """计算序列的绝对偏度：E[(x-mu)^3] / sigma^3"""
         mu = torch.mean(x, dim=1, keepdim=True)
         sigma = torch.std(x, dim=1, keepdim=True)
-        sigma_safe = torch.clamp(sigma, min=0.05)  # 防噪声放大
-        skew = torch.mean(((x - mu) / sigma_safe)**3, dim=1)
+        # 计算三阶标准矩
+        skew = torch.mean(((x - mu) / (sigma + 1e-6))**3, dim=1)
         return torch.abs(skew)
 
     # =========================================================================
-    # A. 阿尔芬结构判据
+    # A. 阿尔芬结构专属判据 (保留 mask_alfven 门控)
     # =========================================================================
     
-    # (2) 极化比: max(|b_min|) / max(|b_max|)
+    # (0) 极化比: max(|b_min|) / max(|b_max|)
     max_abs_bmin = torch.max(torch.abs(bmin), dim=1)[0]
     max_abs_bmax = torch.max(torch.abs(bmax), dim=1)[0]
     raw_pol_ratio = max_abs_bmin / (max_abs_bmax + 1e-6)
@@ -452,7 +459,7 @@ def extract_physical_features_batch(data_batch, device):
     dom_freq = torch.where(mask_alfven, dom_freq, torch.zeros_like(dom_freq))
 
     
-    # (9) B最小时，dot_bmax 凸起的程度和 b_max 的大小
+    # (8)(9) B最小时，dot_bmax 凸起的程度和 b_max 的大小
     def calc_sheet_reversal_criterion(B_full, b_max, search_range=100):
         """
         B_full: [Batch, Length] - 总磁场强度 B
@@ -518,51 +525,61 @@ def extract_physical_features_batch(data_batch, device):
         return score
     idx_min_B = torch.argmin(B, dim=1)
     peakiness_dot_bmax = dot_bmax[batch_indices, idx_min_B]
+    peakiness_dot_bmax = torch.where(mask_alfven, peakiness_dot_bmax, torch.zeros_like(peakiness_dot_bmax))
     b_max_flipscore = calc_sheet_reversal_criterion(B, bmax, search_range=100)
+    b_max_flipscore = torch.where(mask_alfven, b_max_flipscore, torch.zeros_like(b_max_flipscore))
 
-    # （16）b_max梯度的偏度
+    # (17) b_max梯度的偏度
     diff_bmax = bmax[:, 1:] - bmax[:, :-1]
     abs_skew_grad_bmax = get_abs_skewness(diff_bmax)
     abs_skew_grad_bmax = torch.where(mask_alfven, abs_skew_grad_bmax, torch.zeros_like(abs_skew_grad_bmax))
 
 
     # =========================================================================
-    # B. 压缩性结构判据
+    # B. 压缩性结构专属判据 (移除 mask_comp 硬截断，保留物理连续性)
     # =========================================================================
 
-    # (3) b_z和B 扰动凹陷或凸起程度
+    # (2) b_z和B 扰动凹陷或凸起程度
     idx_max_bz = torch.argmax(torch.abs(bz), dim=1)
     bz_dip = bz[batch_indices, idx_max_bz]
     idx_max_B = torch.argmax(torch.abs(B), dim=1)
     B_dip = B[batch_indices, idx_max_B]
     B_dip = torch.where(mask_comp, B_dip, torch.zeros_like(B_dip))
 
-    # (6) 激波指标: b_z 斜率(差分)绝对值的最大值
-    max_grad_bz = torch.max(torch.abs(bz[:, 1:] - bz[:, :-1]), dim=1)[0]
-
-    # (8) 激波判据：b_z最大值的绝对值减最小值的绝对值
+    # (6) 激波判据：b_z最大值的绝对值减最小值的绝对值
     b_z_max_ = torch.max(bz, dim=1)[0]
     b_z_min_ = torch.min(bz, dim=1)[0]
     R_jump = torch.abs(b_z_max_) - torch.abs(b_z_min_) # 接近0：shock；接近1：soliton；接近-1：hole
     R_jump = torch.where(mask_comp, R_jump, torch.zeros_like(R_jump))
 
-    def get_abs_kurtosis(x):
-        mu = torch.mean(x, dim=1, keepdim=True)
-        sigma = torch.std(x, dim=1, keepdim=True)
-        sigma_safe = torch.clamp(sigma, min=0.05)  # 防止噪声放大
-        kurt = torch.mean( ((x - mu) / sigma_safe)**4, dim=1)
-        return kurt
-    
+    # (7) 渐近不对称比: 跃变前后B均值差的绝对值 / 局部噪声 (激波>>1, 磁洞/孤子≈0)
+    dB = torch.abs(B[:, 1:] - B[:, :-1])
+    ramp = torch.argmax(dB, dim=1)
+    idx = torch.arange(300, device=device).unsqueeze(0)
+    ramp_col = ramp.unsqueeze(1)
+    up_mask = (idx >= ramp_col - 50) & (idx <= ramp_col - 15)
+    dn_mask = (idx >= ramp_col + 15) & (idx <= ramp_col + 50)
+    B_up_mean = (B * up_mask.float()).sum(dim=1) / (up_mask.sum(dim=1).float() + 1e-6)
+    B_dn_mean = (B * dn_mask.float()).sum(dim=1) / (dn_mask.sum(dim=1).float() + 1e-6)
+    jump = torch.abs(B_dn_mean - B_up_mean)
+    B_up_std = torch.sqrt(((B**2 * up_mask.float()).sum(dim=1) / (up_mask.sum(dim=1).float() + 1e-6) - B_up_mean**2).clamp(min=0))
+    B_dn_std = torch.sqrt(((B**2 * dn_mask.float()).sum(dim=1) / (dn_mask.sum(dim=1).float() + 1e-6) - B_dn_mean**2).clamp(min=0))
+    noise = torch.maximum(B_up_std, B_dn_std)
+    asym_B = torch.where(mask_comp, jump / (noise + 1e-6), torch.zeros_like(jump))
+
     # (10) dot_B 的全局峰度 (Kurtosis)
     mean_dot_B = torch.mean(dot_B, dim=1, keepdim=True)
-    kurt_dot_B = get_abs_kurtosis(dot_B)
+    std_dot_B = torch.std(dot_B, dim=1, keepdim=True)
+    kurt_dot_B = torch.mean(((dot_B - mean_dot_B) / (std_dot_B + 1e-6))**4, dim=1) / 10.0
     kurt_dot_B = torch.where(mask_comp, kurt_dot_B, torch.zeros_like(kurt_dot_B))
 
-    # (12) dot_bz 的全局峰度 (Kurtosis)
+    # (11) dot_bz 的全局峰度 (Kurtosis)
     mean_dot_bz = torch.mean(dot_bz, dim=1, keepdim=True)
-    kurt_dot_bz = get_abs_kurtosis(dot_bz)
+    std_dot_bz = torch.std(dot_bz, dim=1, keepdim=True)
+    kurt_dot_bz = torch.mean(((dot_bz - mean_dot_bz) / (std_dot_bz + 1e-6))**4, dim=1) / 10.0
+    kurt_dot_bz = torch.where(mask_comp, kurt_dot_bz, torch.zeros_like(kurt_dot_bz))
 
-    # (13) b_z和b_max穿过 ±0.5 的次数 (反映震荡结构的复杂程度)
+    # (12)(13) b_z和b_max穿过 ±0.5 的次数 (反映震荡结构的复杂程度)
     def calc_criterion_16(bz, threshold=0.5):
         """
         bz: [Batch, Length] 的张量
@@ -583,9 +600,9 @@ def extract_physical_features_batch(data_batch, device):
     complexity_index_bmax = calc_criterion_16(bmax)
 
     # (14) B 场与 tanh 模板的最大相关性
-    def get_max_corr_template(x, y_template, max_shift=50):
+    def get_max_corr_template(x, y_template):
         """
-        计算 batch x 与单个模板 y_template 之间的最大互相关性 (位移无关, 限制在 ±max_shift)
+        计算 batch x 与单个模板 y_template 之间的最大互相关性 (位移无关)
         """
         N_pts = x.size(1)
         # 模板扩展到 batch 大小
@@ -599,19 +616,15 @@ def extract_physical_features_batch(data_batch, device):
         cross_corr = torch.fft.irfft(corr_freq, n=pad_size, dim=1)
         x_energy = torch.sqrt(torch.sum(x_norm**2, dim=1) + 1e-8)
         y_energy = torch.sqrt(torch.sum(y_norm**2, dim=1) + 1e-8)
-        # 限制搜索范围为 ±max_shift，避免无关结构通过极端位移获得虚假高相关
-        pos_indices = torch.arange(0, max_shift + 1, device=x.device)
-        neg_indices = torch.arange(pad_size - max_shift, pad_size, device=x.device)
-        valid_indices = torch.cat([pos_indices, neg_indices])
         # 使用 abs 是为了同时兼容正向和反向的波形 (+/- 符号)
-        max_corr = torch.max(torch.abs(cross_corr[:, valid_indices]), dim=1)[0]
+        max_corr = torch.max(torch.abs(cross_corr), dim=1)[0]
         return max_corr / (x_energy * y_energy + 1e-8)
     t1 = torch.linspace(-100, 100, 300, device=device)
     tanh_template = torch.tanh(t1).unsqueeze(0) # [1, 300]
-    corr_shock_B = get_max_corr_template(B, tanh_template, max_shift=50)
+    corr_shock_B = get_max_corr_template(B, tanh_template)
     corr_shock_B = torch.where(mask_comp, corr_shock_B, torch.zeros_like(corr_shock_B))
 
-    # (15) 梯度（斜率）的偏度 (反映跳变的方向性)
+    # (15)(16) 梯度（斜率）的偏度 (反映跳变的方向性)
     # 激波的斜率分布是单向极值（极度偏斜），震荡结构的斜率分布是对称的（偏度近0）
     diff_B = B[:, 1:] - B[:, :-1]
     diff_bz = bz[:, 1:] - bz[:, :-1]
@@ -619,26 +632,27 @@ def extract_physical_features_batch(data_batch, device):
     abs_skew_grad_bz = get_abs_skewness(diff_bz)
     # 采用压缩性门控
     abs_skew_grad_B = torch.where(mask_comp, abs_skew_grad_B, torch.zeros_like(abs_skew_grad_B))
+    abs_skew_grad_bz = torch.where(mask_comp, abs_skew_grad_bz, torch.zeros_like(abs_skew_grad_bz))
 
     return torch.stack([
-        pol_ratio,
-        comp_index,
-        bz_dip,
-        B_dip,
-        corr_bmax_bmin,
-        dom_freq,
-        max_grad_bz,
-        R_jump,
-        peakiness_dot_bmax,
-        b_max_flipscore,
-        kurt_dot_B,
-        kurt_dot_bz,
-        complexity_index_bz,
-        complexity_index_bmax,
-        corr_shock_B,
-        abs_skew_grad_B,
-        abs_skew_grad_bz,
-        abs_skew_grad_bmax
+        pol_ratio,             # 0
+        comp_index,            # 1
+        bz_dip,                # 2
+        B_dip,                 # 3
+        corr_bmax_bmin,        # 4
+        dom_freq,              # 5
+        R_jump,                # 6
+        asym_B,                # 7
+        peakiness_dot_bmax,    # 8
+        b_max_flipscore,       # 9
+        kurt_dot_B,            # 10
+        kurt_dot_bz,           # 11
+        complexity_index_bz,   # 12
+        complexity_index_bmax, # 13
+        corr_shock_B,          # 14
+        abs_skew_grad_B,       # 15
+        abs_skew_grad_bz,      # 16
+        abs_skew_grad_bmax     # 17
     ], dim=1)
 
 # %%
@@ -725,24 +739,24 @@ def analyze_prototype_features(samples_path, device='cpu'):
 
     # 5. 生成表格
     feature_names = [
-        "pol_ratio",
-        "comp_index",
-        "bz_dip",
-        "B_dip",
-        "corr_bmax_bmin",
-        "dom_freq",
-        "max_grad_bz",
-        "R_jump",
-        "peakiness_dot_bmax",
-        "b_max_flipscore",
-        "kurt_dot_B",
-        "kurt_dot_bz",
-        "complexity_index_bz",
-        "complexity_index_bmax",
-        "corr_shock_B",
-        "abs_skew_grad_B",
-        "abs_skew_grad_bz",
-        "abs_skew_grad_bmax"
+        'pol_ratio',             # 0
+        'comp_index',            # 1
+        'bz_dip',                # 2
+        'B_dip',                 # 3
+        'corr_bmax_bmin',        # 4
+        'dom_freq',              # 5
+        'R_jump',                # 6
+        'asym_B',                # 7
+        'peakiness_dot_bmax',    # 8
+        'b_max_flipscore',       # 9
+        'kurt_dot_B',            # 10
+        'kurt_dot_bz',           # 11
+        'complexity_index_bz',   # 12
+        'complexity_index_bmax', # 13
+        'corr_shock_B',          # 14
+        'abs_skew_grad_B',       # 15
+        'abs_skew_grad_bz',      # 16
+        'abs_skew_grad_bmax'     # 17
     ]
     
     df_stats = pd.DataFrame(all_stats)
@@ -755,6 +769,9 @@ def analyze_prototype_features(samples_path, device='cpu'):
 workspace = '..\\'
 stats_table = analyze_prototype_features(os.path.join(workspace, 'samples_clean'))
 print(stats_table.to_string()) # 或者 stats_table.to_parquet("feature_analysis.parquet")
+# 保存到csv文件
+stats_table.to_csv(os.path.join(workspace, 'samples_clean', 'feature_analysis.csv'), index=False)
+
 
 # %% [markdown]
 # # 转为parquet格式
