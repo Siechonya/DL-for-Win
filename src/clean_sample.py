@@ -39,7 +39,8 @@ def draw_samples(samples_path, cluster, num=None, save=False):
     b_min = df['b_min'].values
 
     def gau(B, b_z, b_max, b_min, sigma, l, r):
-        # B = signal.detrend(B)
+        # 去趋势
+        B = signal.detrend(B)
         # b_z = signal.detrend(b_z)
         # b_max = signal.detrend(b_max)
         # b_min = signal.detrend(b_min)
@@ -49,7 +50,7 @@ def draw_samples(samples_path, cluster, num=None, save=False):
         # b_z = gaussian_filter1d(b_z, sigma=sigma)
         # B = gaussian_filter1d(B, sigma=sigma/5)
 
-        sigma1= sigma/4
+        # sigma1= sigma/4
         # B[:l] = gaussian_filter1d(B[:l], sigma=sigma1)
         # b_z[:l] = gaussian_filter1d(b_z[:l], sigma=sigma1)
         # B[r:] = gaussian_filter1d(B[r:], sigma=sigma1)
@@ -92,12 +93,12 @@ def draw_samples(samples_path, cluster, num=None, save=False):
             else:
                 return lst
         
-        # shift = -1
+        # shift = -5
         # b_max = shift_list(b_max, shift)
         
         return B, b_z, b_max, b_min
 
-    B, b_z, b_max, b_min = gau(B, b_z, b_max, b_min, sigma=15, l=140, r=157)
+    # B, b_z, b_max, b_min = gau(B, b_z, b_max, b_min, sigma=10, l=140, r=157)
 
     if cluster == 'sheet' or cluster == 'hole':
         min_idx = np.argmin(B)
@@ -122,14 +123,15 @@ def draw_samples(samples_path, cluster, num=None, save=False):
     os.makedirs(os.path.join('../samples_clean', cluster), exist_ok=True)
     df = pd.DataFrame({'UT': UT, 'B': B, 'b_z': b_z, 'b_max': b_max, 'b_min': b_min})
     if save:
-        df.to_parquet(os.path.join('..\\samples_clean', cluster, num), index=False)
+        df.to_parquet(os.path.join('..\\samples_clean', cluster, num), index=True)
 
 workspace = '..\\'
-# draw_samples(os.path.join(workspace, 'samples'), cluster='shock', num='4.parquet', save=True)
+draw_samples(os.path.join(workspace, 'samples'), cluster='hole', num='1.parquet', save=True)
 # draw_samples(os.path.join(workspace, 'samples_clean'), cluster='shock', num='4.parquet', save=False)    
 
 
 # %%
+# 查看感兴趣的parquet的轨道时间
 import pandas as pd
 # temp = pd.read_parquet(f"../trainset_20240101-0130/41053.parquet")
 temp = pd.read_parquet(f"../trainset_20240101-0130/32267.parquet")
@@ -217,17 +219,24 @@ def draw_samples(samples_path, cluster):
 
 workspace = '..\\'
 draw_samples(os.path.join(workspace, 'samples_clean'), cluster='c vortex')
+plt.savefig(os.path.join(workspace, 'samples_clean', 'c vortex.png'), dpi=150, bbox_inches='tight')
 draw_samples(os.path.join(workspace, 'samples_clean'), cluster='hole')
+plt.savefig(os.path.join(workspace, 'samples_clean', 'hole.png'), dpi=150, bbox_inches='tight')
 draw_samples(os.path.join(workspace, 'samples_clean'), cluster='l vortex')
+plt.savefig(os.path.join(workspace, 'samples_clean', 'l vortex.png'), dpi=150, bbox_inches='tight')
 draw_samples(os.path.join(workspace, 'samples_clean'), cluster='sheet')
+plt.savefig(os.path.join(workspace, 'samples_clean', 'sheet.png'), dpi=150, bbox_inches='tight')
 draw_samples(os.path.join(workspace, 'samples_clean'), cluster='shock')
+plt.savefig(os.path.join(workspace, 'samples_clean', 'shock.png'), dpi=150, bbox_inches='tight')
 draw_samples(os.path.join(workspace, 'samples_clean'), cluster='soliton')
+plt.savefig(os.path.join(workspace, 'samples_clean', 'soliton.png'), dpi=150, bbox_inches='tight')
 draw_samples(os.path.join(workspace, 'samples_clean'), cluster='vortex chain')
-draw_samples(os.path.join(workspace, 'samples_clean'), cluster='alfen dis')
-
+plt.savefig(os.path.join(workspace, 'samples_clean', 'vortex chain.png'), dpi=150, bbox_inches='tight')
+draw_samples(os.path.join(workspace, 'samples_clean'), cluster='alfven dis')
+plt.savefig(os.path.join(workspace, 'samples_clean', 'alfven dis.png'), dpi=150, bbox_inches='tight')
 
 # draw_samples(os.path.join(workspace, 'samples_clean'), cluster='_sheet')
-draw_samples(os.path.join(workspace, 'samples_clean'), cluster='_shock')
+# draw_samples(os.path.join(workspace, 'samples_clean'), cluster='_shock')
 
 
 # %%
@@ -343,7 +352,7 @@ def draw_samples_with_derivatives(samples_path, cluster):
 # --- 运行绘图 ---
 workspace = '..\\'
 samples_base_path = os.path.join(workspace, 'samples_clean')
-clusters = ['c vortex', 'hole', 'l vortex', 'sheet', 'shock', 'soliton', 'vortex chain', 'alfen dis', '_sheet']
+clusters = ['c vortex', 'hole', 'l vortex', 'sheet', 'shock', 'soliton', 'vortex chain', 'alfven dis']
 
 for target_cluster in clusters:
     draw_samples_with_derivatives(samples_base_path, cluster=target_cluster)
@@ -420,8 +429,8 @@ def extract_physical_features_batch(data_batch, device):
         max_corr = torch.max(torch.abs(cross_corr), dim=1)[0]
         return max_corr / (x_energy * y_energy + 1e-8)
     raw_corr_bmax_bmin = get_max_corr_pair(bmax, bmin)
-    # 增加双重条件：极化比>0.2 且 属于阿尔芬结构门控
-    condition_corr = (pol_ratio > 0.2) & mask_alfven
+    # 增加双重条件：极化比>0.5 且 属于阿尔芬结构门控
+    condition_corr = (pol_ratio > 0.5) & mask_alfven
     corr_bmax_bmin = torch.where(condition_corr, raw_corr_bmax_bmin, torch.zeros_like(raw_corr_bmax_bmin))
     
     # (5) b_max 的自相关相位
@@ -686,7 +695,7 @@ def normalize_sequence(seq):
     return np.column_stack([B_norm, perturb_norm])
 def analyze_prototype_features(samples_path, device='cpu'):
     # clusters = ['sheet', 'vortex chain', 'c vortex', 'l vortex', 'hole', 'soliton', 'shock', '_shock', '_sheet']
-    clusters = ['sheet', 'vortex chain', 'c vortex', 'l vortex', 'hole', 'soliton', 'shock', 'alfen dis']
+    clusters = ['sheet', 'vortex chain', 'c vortex', 'l vortex', 'hole', 'soliton', 'shock', 'alfven dis']
     all_stats = []
 
     for cluster in clusters:

@@ -422,9 +422,13 @@ def plot_class_samples(target_class, total_count=100, per_fig=10, seed=42):
             
             seq = test_data_raw[idx]
             file_name = test_files[idx]
-            
-            sample_emb = test_embeddings[idx]
-            dist_to_proto = np.linalg.norm(sample_emb - target_proto_center)
+
+            if target_proto_center is not None:
+                sample_emb = test_embeddings[idx]
+                dist_to_proto = np.linalg.norm(sample_emb - target_proto_center)
+                dist_str = f"Dist: {dist_to_proto:.4f} | "
+            else:
+                dist_str = ""
             
             B = seq[:, 0]
             b_z = seq[:, 1]
@@ -440,7 +444,7 @@ def plot_class_samples(target_class, total_count=100, per_fig=10, seed=42):
             ax_top.axvline(max_idx, color='red', linestyle='--', alpha=0.4)
             ax_top.axvline(min_B_idx, color='green', linestyle='--', alpha=0.4)
             
-            ax_top.set_title(f"File: {file_name}\nDist: {dist_to_proto:.4f} | Idx: {idx}", fontsize=11)
+            ax_top.set_title(f"File: {file_name}\n{dist_str}Idx: {idx}", fontsize=11)
             
             if j == 0: ax_top.set_ylabel('B', fontweight='bold')
             

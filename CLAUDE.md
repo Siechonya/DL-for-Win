@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project overview
 
-Plasma physics coherent structure classification using deep autoencoders (1D-CNN + Bi-LSTM or 1D-CNN + Transformer) with physical contrastive learning. 4-channel magnetic field time series → 64-dim latent space → 8-class prediction (sheet, vortex chain, c vortex, l vortex, hole, soliton, shock, alfen dis) + noise rejection via adaptive thresholds.
+Plasma physics coherent structure classification using deep autoencoders (1D-CNN + Bi-LSTM or 1D-CNN + Transformer) with physical contrastive learning. 4-channel magnetic field time series → 64-dim latent space → 8-class prediction (sheet, vortex chain, c vortex, l vortex, hole, soliton, shock, alfven dis) + noise rejection via adaptive thresholds.
 
 ## Repository is notebook-based
 

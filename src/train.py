@@ -253,8 +253,8 @@ def extract_physical_features_batch(data_batch, device):
         max_corr = torch.max(torch.abs(cross_corr), dim=1)[0]
         return max_corr / (x_energy * y_energy + 1e-8)
     raw_corr_bmax_bmin = get_max_corr_pair(bmax, bmin)
-    # 增加双重条件：极化比>0.2 且 属于阿尔芬结构门控
-    condition_corr = (pol_ratio > 0.2) & mask_alfven
+    # 增加双重条件：极化比>0.5 且 属于阿尔芬结构门控
+    condition_corr = (pol_ratio > 0.5) & mask_alfven
     corr_bmax_bmin = torch.where(condition_corr, raw_corr_bmax_bmin, torch.zeros_like(raw_corr_bmax_bmin))
     
     # (5) b_max 的自相关相位
@@ -744,7 +744,7 @@ test_data_raw = data_all_raw[train_size+val_size:]
 test_files = data_all_files[train_size+val_size:]
 
 # --- 3. 加载并增强范本 (Prototypes) ---
-classes = ['sheet', 'vortex chain', 'c vortex', 'l vortex', 'hole', 'soliton', 'shock', 'alfen dis']
+classes = ['sheet', 'vortex chain', 'c vortex', 'l vortex', 'hole', 'soliton', 'shock', 'alfven dis']
 prototypes_processed_raw = {}
 for cls in classes:
     cls_path = os.path.join(samples_path, cls)
@@ -784,6 +784,7 @@ val_dataloader = DataLoader(val_dataset, batch_size=128, shuffle=True, pin_memor
 proto_dataloader = DataLoader(proto_dataset, batch_size=128, shuffle=True, pin_memory=False)
 
 # --- 6. 训练 ---
+torch.manual_seed(42)  # 固定随机种子, 保证结果可复现
 model = BiAutoencoder(input_size=4, cnn_channels=16, hidden_size=128, num_layers=2, latent_dim=64).to(device)
 print(f"Starting Autoencoder training on {device}...")
 torch.cuda.empty_cache()

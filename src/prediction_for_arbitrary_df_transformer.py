@@ -181,7 +181,7 @@ predictor = PhysicalPredictor(
 )
 
 # 加载数据
-test_df = pd.read_parquet(os.path.join(workspace, 'trainset', '59914.parquet'))
+test_df = pd.read_parquet(os.path.join(workspace, 'trainset', '33291.parquet'))
 
 # 获取预测
 label, dist, details, is_neither = predictor.predict(test_df)
@@ -266,14 +266,99 @@ def run_batch_predictions(predictor, data_dir, fraction=0.1, seed=42, batch_log=
     return test_data_raw, test_files_list, test_embeddings, predictions_list
 
 # --- 运行批量预测 ---
-data_dir = os.path.join(workspace, 'testset')
+# data_dir = os.path.join(workspace, 'testset')
+data_dir = os.path.join(workspace, 'trainset_0415-0530')
 
 test_data_raw, test_files, test_embeddings, predictions = run_batch_predictions(
-    predictor, data_dir, fraction=0.2, seed=123
+    predictor, data_dir, fraction=1, seed=42
 )
 train_size = 0   # 预测 notebook 无训练/验证划分
 val_size = 0
 final_proto_emb = predictor.proto_embs
+
+# %% [markdown]
+# ### 从 trainset_0415-0530 查看 top-10 近邻（辅助挑选 sheet / alfen dis 新原型）
+# 复用上方 run_batch_predictions 返回的 test_embeddings / test_data_raw / test_files / predictions
+# 红色标题 = 模型预测 ≠ 原型类(被其他类抢走)，黑色 = 纯样本
+
+# %%
+def verify_top_k_samples(embeddings, data_raw, files, proto_embs_dict,
+                         predictions=None, target_classes=None, k=10):
+    """
+    对指定类别绘制 top-k 最近邻波形。
+    predictions 为 run_batch_predictions 返回的预测标签列表, 用于判断样本是否被抢走。
+    """
+    all_class_names = list(proto_embs_dict.keys())
+    all_centers = np.array([proto_embs_dict[cls] for cls in all_class_names])
+
+    if target_classes is None:
+        target_classes = all_class_names
+
+    for cls_name in target_classes:
+        proto_center = proto_embs_dict[cls_name]
+        distances = np.linalg.norm(embeddings - proto_center, axis=1)
+        closest_indices = np.argsort(distances)[k*1:k*2]
+
+        fig, axes = plt.subplots(2, k, figsize=(5 * k, 8))
+        fig.suptitle(f'Top {k} Matches for Prototype Class: {cls_name.upper()} (trainset_0415-0530)',
+                     fontsize=16, fontweight='bold', y=1.02)
+
+        for j, idx in enumerate(closest_indices):
+            sample_emb = embeddings[idx]
+            all_dists = np.linalg.norm(all_centers - sample_emb, axis=1)
+            nearest_cls = all_class_names[np.argmin(all_dists)]
+            model_pred = predictions[idx] if predictions is not None else nearest_cls
+
+            seq = data_raw[idx]
+            file_num = files[idx]
+            B = seq[:, 0]
+            bz = seq[:, 1]
+            bmax = seq[:, 2]
+            bmin = seq[:, 3]
+
+            b_sum_sq = bz**2 + bmax**2 + bmin**2
+            max_idx = np.argmax(b_sum_sq)
+            min_idx = np.argmin(B)
+
+            ax_top = axes[0, j] if k > 1 else axes[0]
+            ax_btm = axes[1, j] if k > 1 else axes[1]
+
+            ax_top.plot(B, color='black', linewidth=1.5)
+            ax_top.axhline(np.mean(B), color='gray', linestyle='--', alpha=0.6)
+            ax_top.axvline(max_idx, color='red', linestyle='--', alpha=0.4)
+            ax_top.axvline(min_idx, color='green', linestyle='--', alpha=0.4)
+
+            title_color = 'black' if model_pred == cls_name else 'red'
+            ax_top.set_title(
+                f'Dist: {distances[idx]:.3f} - {file_num}\nPred: {model_pred} | NN: {nearest_cls}',
+                fontsize=10, color=title_color)
+
+            if j == 0:
+                ax_top.set_ylabel('B', fontsize=12, fontweight='bold')
+
+            ax_btm.plot(bz, label='b_z', color='blue', alpha=0.8)
+            ax_btm.plot(bmax, label='b_max', color='red', alpha=0.8)
+            ax_btm.plot(bmin, label='b_min', color='green', alpha=0.8)
+            ax_btm.axvline(max_idx, color='red', linestyle='--', alpha=0.4)
+            ax_btm.axhline(0, color='gray', linestyle='--', alpha=0.6)
+            ax_btm.axvline(min_idx, color='green', linestyle='--', alpha=0.4)
+
+            if j == 0:
+                ax_btm.set_ylabel('b (Perturbations)', fontsize=12, fontweight='bold')
+            if j == k - 1:
+                ax_btm.legend(loc='upper right', fontsize='small')
+            ax_btm.set_xlabel('Time Step')
+
+        plt.tight_layout()
+        plt.show()
+
+
+verify_top_k_samples(
+    embeddings=test_embeddings, data_raw=test_data_raw, files=test_files,
+    proto_embs_dict=final_proto_emb, predictions=predictions,
+    target_classes=['sheet', 'hole', 'shock', 'soliton', 'l vortex', 'c vortex', 'vortex chain', 'alfven dis'], k=10
+)
+
 
 # %%
 import matplotlib.pyplot as plt
@@ -418,9 +503,13 @@ def plot_class_samples(target_class, total_count=100, per_fig=10, seed=42):
             
             seq = test_data_raw[idx]
             file_name = test_files[idx]
-            
-            sample_emb = test_embeddings[idx]
-            dist_to_proto = np.linalg.norm(sample_emb - target_proto_center)
+
+            if target_proto_center is not None:
+                sample_emb = test_embeddings[idx]
+                dist_to_proto = np.linalg.norm(sample_emb - target_proto_center)
+                dist_str = f"Dist: {dist_to_proto:.4f} | "
+            else:
+                dist_str = ""
             
             B = seq[:, 0]
             b_z = seq[:, 1]
@@ -436,7 +525,7 @@ def plot_class_samples(target_class, total_count=100, per_fig=10, seed=42):
             ax_top.axvline(max_idx, color='red', linestyle='--', alpha=0.4)
             ax_top.axvline(min_B_idx, color='green', linestyle='--', alpha=0.4)
             
-            ax_top.set_title(f"File: {file_name}\nDist: {dist_to_proto:.4f} | Idx: {idx}", fontsize=11)
+            ax_top.set_title(f"File: {file_name}\n{dist_str}Idx: {idx}", fontsize=11)
             
             if j == 0: ax_top.set_ylabel('B', fontweight='bold')
             
@@ -462,13 +551,16 @@ def plot_class_samples(target_class, total_count=100, per_fig=10, seed=42):
 # print("-------------------------------")
 # plot_class_samples(target_class='hole', total_count=100, per_fig=10, seed=42)
 # print("-------------------------------")
-# plot_class_samples(target_class='soliton', total_count=100, per_fig=10, seed=42)
+plot_class_samples(target_class='soliton', total_count=100, per_fig=10, seed=42)
 # print("-------------------------------")
-plot_class_samples(target_class='c vortex', total_count=100, per_fig=10, seed=42)
+# plot_class_samples(target_class='c vortex', total_count=100, per_fig=10, seed=42)
 # print("-------------------------------")
 # plot_class_samples(target_class='l vortex', total_count=100, per_fig=10, seed=42)
 # print("-------------------------------")
 # plot_class_samples(target_class='vortex chain', total_count=100, per_fig=10, seed=42)
+# print("-------------------------------")
+# plot_class_samples(target_class='neither', total_count=100, per_fig=10, seed=42)
+
 
 
 # %%

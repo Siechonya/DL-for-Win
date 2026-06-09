@@ -50,7 +50,7 @@ Both share the same decoder and loss design. Transformer's self-attention excels
 | `hole` | Magnetic hole |
 | `soliton` | Magnetic soliton |
 | `shock` | Shock / shock-like structure |
-| `alfen dis` | Alfvén discontinuity |
+| `alfven dis` | Alfvén discontinuity |
 | `neither` | Rejected / unclassified |
 
 ## Usage
