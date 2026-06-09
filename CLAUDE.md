@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project overview
 
-Plasma physics coherent structure classification using a BiAutoencoder (1D-CNN + Bi-LSTM) with physical contrastive learning. 4-channel magnetic field time series → 64-dim latent space → 8-class prediction (sheet, vortex chain, c vortex, l vortex, hole, soliton, shock, alfen dis) + noise rejection via adaptive thresholds.
+Plasma physics coherent structure classification using deep autoencoders (1D-CNN + Bi-LSTM or 1D-CNN + Transformer) with physical contrastive learning. 4-channel magnetic field time series → 64-dim latent space → 8-class prediction (sheet, vortex chain, c vortex, l vortex, hole, soliton, shock, alfen dis) + noise rejection via adaptive thresholds.
 
 ## Repository is notebook-based
 
@@ -14,16 +14,18 @@ All code lives in Jupyter notebooks. There is no `setup.py`, `requirements.txt`,
 
 ## Key notebooks
 
-- **`src/train_20240101-0130.ipynb`** — Main training pipeline (Euclidean distance). Defines `load_data`, model, loss functions, `test_clustering`, training loop, t-SNE, and all visualization cells. Run top-to-bottom.
-- **`src/train_20240101-0130_cosine.ipynb`** — Cosine distance variant. Same architecture but `physical_contrastive_loss` and `test_clustering` use cosine distance (L2-normalized embeddings + `cdist`). Keeps input normalization to keep MSE channels balanced.
-- **`src/prediction_for_arbitrary_df.ipynb`** — Loads trained weights and runs inference on new data. Defines `PhysicalPredictor` with `distance_metric` parameter (`'euclidean'` or `'cosine'`). Includes batch prediction runner with tqdm and visualization cells. Self-contained after first run.
-- **`src/clean_sample.ipynb`** — Preprocessing for prototype samples.
+- **`src/train.ipynb`** — Main training pipeline (Bi-LSTM encoder). Defines `load_data`, model, loss functions, `test_clustering`, training loop, t-SNE, and all visualization cells. Run top-to-bottom.
+- **`src/train_cnn_transformer.ipynb`** — Transformer encoder variant. Same pipeline as `train.ipynb` but replaces Bi-LSTM encoder with 3-layer Transformer (self-attention). Better at global structure comparison (shock vs soliton), slightly slower per epoch.
+- **`src/prediction_for_arbitrary_df.ipynb`** — Loads Bi-LSTM trained weights and runs inference on new data. Self-contained: defines `BiAutoencoder` class + `PhysicalPredictor`.
+- **`src/prediction_for_arbitrary_df_transformer.ipynb`** — Same as above but for Transformer-trained weights. Defines `CnnTransformerAutoencoder` class.
+- **`src/clean_sample.ipynb`** — Prototype feature analysis and preprocessing.
 
 ## Architecture decisions that matter
 
 - **No contrastive warmup**: `start_lambda_contrastive = max_lambda_contrastive = 0.05`. Both losses co-evolve from epoch 0.
-- **Normalization in `load_data`**: B channel centered then divided by max; perturbations divided by global max. This is a linear transform — required for balanced MSE channels, harmless for cosine distance.
+- **Normalization in `load_data`**: B channel centered then divided by max; perturbations divided by global max. Linear transform — required for balanced MSE channels.
 - **`max_shift=50` in `calc_invariant_mse`**: Intentional large tolerance for translation+reflection invariance (structures aren't centered in the time window).
+- **Two encoder architectures available**: Bi-LSTM (recurrent, good at local phase/pattern) and Transformer (self-attention, good at global comparison like shock detection). Decoder stays Bi-LSTM in both.
 - **Physical features**: 18 features computed by `extract_physical_features_batch` (see table below). Gating masks (`mask_alfven` / `mask_comp`) zero out irrelevant features per structure type. Features are z-score normalized inside `physical_contrastive_loss` and used for pair-masking via similarity thresholds (<0.8 similar, >4.0 dissimilar).
 - **Classification**: Prototype-center nearest-neighbor with per-class dynamic thresholds (`mean + n_std * std`). Unknown/noise samples assigned `'neither'` if distance exceeds threshold.
 - **Training data**: ~70k parquet files from `trainset/` (2023–2024, 2 days selected per month). Much more diverse than the original Jan-2024-only dataset (~49k files). Loss values are NOT comparable between old and new datasets. Only prototypes (31 raw × 2 augmented = 62) have labels. Training samples are unlabeled (`labels = -1` in contrastive loss).

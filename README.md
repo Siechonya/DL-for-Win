@@ -1,42 +1,43 @@
 # DL for Win
 
-Deep learning framework for plasma physics coherent structure classification. A BiAutoencoder (1D-CNN + Bi-LSTM) with physical contrastive learning identifies coherent structures from 4-channel magnetic field time series. 64-dim latent space → 9-class prediction (8 structure types + noise rejection via adaptive thresholds).
+Deep learning framework for plasma physics coherent structure classification. Two encoder architectures (Bi-LSTM and CNN+Transformer) with physical contrastive learning identify coherent structures from 4-channel magnetic field time series. 64-dim latent space → 8-class prediction + noise rejection via adaptive thresholds.
 
 ## Project structure
 
 ```
 ├── src/
-│   ├── train_20240101-0130.ipynb / .py        # Training pipeline (Euclidean distance)
-│   ├── train_20240101-0130_cosine.ipynb / .py # Training pipeline (cosine distance variant)
-│   ├── prediction_for_arbitrary_df.ipynb / .py# Inference on arbitrary data
-│   └── clean_sample.ipynb / .py               # Sample data preprocessing
-├── samples_clean/                              # Labeled prototype waveforms
-├── output/images/eu/                           # Training output visualizations
-├── bi_model.pth / proto_emb.npy                # Trained model weights / prototype embeddings
-├── thresholds.npy / target_pts.npy            # Classification thresholds / interpolation pts
-└── trainset*/                                 # Training datasets (git-ignored)
+│   ├── train.ipynb / .py                          # Training pipeline (Bi-LSTM encoder)
+│   ├── train_cnn_transformer.ipynb / .py          # Training pipeline (Transformer encoder)
+│   ├── prediction_for_arbitrary_df.ipynb / .py   # Inference (Bi-LSTM weights)
+│   ├── prediction_for_arbitrary_df_transformer... # Inference (Transformer weights)
+│   └── clean_sample.ipynb / .py                   # Prototype feature analysis
+├── samples_clean/                                  # Labeled prototype waveforms
+├── output/images/{timestamp}/                      # Per-run training output images
+├── output/train_result/{timestamp}/                # Per-run classification results
+├── bi_model.pth / proto_emb.npy                    # Trained model weights / prototype embeddings
+├── thresholds.npy / target_pts.npy                # Classification thresholds / interpolation pts
+└── trainset/                                       # Training datasets (git-ignored)
 ```
 
-> Each `.ipynb` has a paired `.py` file (percent format, `# %%` cell separators) managed by [Jupytext](https://github.com/mwouts/jupytext). Edit `.py` files for safer code changes — sync back with `jupytext --sync <file>.py`.
+> Each `.ipynb` has a paired `.py` file (percent format, `# %%` cell separators) managed by [Jupytext](https://github.com/mwouts/jupytext). Edit `.py` files for safer code changes — sync with `jupytext --sync <file>.py`.
 
 ## Model architecture
 
-- **1D-CNN frontend** — extracts local gradient and spike features (kernel=5, padding=2)
-- **Bi-LSTM encoder** — 2-layer, hidden=128, bidirectional, captures temporal dependencies
-- **Mixed pooling** (max + mean) — preserves both peak signatures and background trends → 512-dim
-- **FC reduction** — 512 → 64-dim latent space
-- **Bi-LSTM decoder** — reconstructs 4-channel input from 64-dim latent
+**Bi-LSTM variant (`train`)**: 1D-CNN → Bi-LSTM encoder → Mixed Pooling → 64-dim latent → Bi-LSTM decoder
+**Transformer variant (`train_cnn_transformer`)**: 1D-CNN → +Positional Encoding → 3-layer Transformer encoder (d=20, nhead=4) → Mixed Pooling → 64-dim latent → Bi-LSTM decoder
+
+Both share the same decoder and loss design. Transformer's self-attention excels at global structure comparison (shock vs soliton); Bi-LSTM excels at local phase/pattern recognition.
 
 ## Training approach
 
 **Hybrid loss**: `loss = (1-λ) × reconstruction_MSE + λ × contrastive`
 
 - **Reconstruction**: shift-invariant MSE (±50 points, forward + flipped), weighted per-channel (B:0.5, b_z:2.0, b_max,b_min:1.0)
-- **Physical contrastive loss**: 18 hand-crafted physical features (z-score normalized per-batch) gate positive/negative pairs in the latent space via similarity thresholds
-- **`λ = 0.05`** — no warmup, both losses co-evolve from epoch 0
-- **Feature gating**: soft gates with overlap zone — `mask_alfven` (`comp_index < 1`) / `mask_comp` (`comp_index > 0.707`). Intermediate structures (0.707~1.0) activate both feature groups
+- **Physical contrastive loss**: 18 hand-crafted physical features (z-score normalized per-batch) gate positive/negative pairs in the latent space via similarity thresholds (<0.8 similar, >4.0 dissimilar). Features include asym_B (shock detection), comp_index, kurtosis, skewness, etc.
+- **`λ = 0.05`**, margin = 1.0 — no warmup, both losses co-evolve from epoch 0
+- **Feature gating**: `mask_alfven` (`comp_index < 1`) / `mask_comp` (`comp_index > 0.5`). 4 features unmasked, 14 gated
 - **Classification**: prototype-center nearest-neighbor with per-class dynamic thresholds (`mean + n_std × std`). Unknown/noise → `'neither'`
-- **Training data**: ~70K samples, unlabeled. Prototypes (31 raw × 2 augmented = 62) are the only labeled samples
+- **Training data**: ~70K samples (2023–2024, 2 days/month), unlabeled. Prototypes (31 raw × 2 augmented = 62) are the only labeled samples
 
 ## Classification targets
 
@@ -50,11 +51,11 @@ Deep learning framework for plasma physics coherent structure classification. A 
 | `soliton` | Magnetic soliton |
 | `shock` | Shock / shock-like structure |
 | `alfen dis` | Alfvén discontinuity |
-| `noise` | Rejected / unclassified |
+| `neither` | Rejected / unclassified |
 
 ## Usage
 
-### Prediction
+### Prediction (Bi-LSTM)
 
 ```python
 predictor = PhysicalPredictor(
@@ -67,10 +68,10 @@ df = pd.read_parquet('your_data.parquet')
 label, distance, details, is_neither = predictor.predict(df)
 ```
 
-### Batch prediction (with OOM protection)
+### Batch prediction
 
 ```python
-results = run_batch_predictions(predictor, 'trainset/', fraction=0.1)
+results = run_batch_predictions(predictor, 'testset/', fraction=0.1)
 ```
 
 ## Environment
