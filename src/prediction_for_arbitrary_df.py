@@ -285,13 +285,13 @@ import numpy as np
 
 def plot_distance_histograms(test_embeddings, predictions, proto_emb, thresholds, bin_size=0.5, max_dist=10):
     """
-    为每个种类绘制距离分布直方图（2x4 固定布局）
+    为每个种类绘制距离分布直方图（3x3 固定布局）
     """
     unique_classes = [cls for cls in proto_emb.keys() if cls != 'neither']
-    
-    cols = 4
-    rows = 2
-    fig, axes = plt.subplots(rows, cols, figsize=(18, 8))
+
+    cols = 3
+    rows = 3
+    fig, axes = plt.subplots(rows, cols, figsize=(18, 12))
     
     bins = np.arange(0, max_dist + bin_size, bin_size)
 
@@ -366,7 +366,7 @@ test_2d = vecs_2d[:len(test_embeddings)]
 proto_2d = vecs_2d[len(test_embeddings):]
 
 # 3. 颜色映射
-colors_list = ['red', 'blue', 'green', 'orange', 'purple', 'cyan', 'magenta', 'brown']
+colors_list = ['red', 'blue', 'green', 'orange', 'purple', 'cyan', 'magenta', 'brown', 'olive']
 color_map = {cls: colors_list[i % len(colors_list)] for i, cls in enumerate(unique_classes)}
 color_map['neither'] = 'lightgrey'
 
@@ -476,7 +476,13 @@ plot_class_samples(target_class='c vortex', total_count=100, per_fig=10, seed=42
 # print("-------------------------------")
 # plot_class_samples(target_class='l vortex', total_count=100, per_fig=10, seed=42)
 # print("-------------------------------")
+# plot_class_samples(target_class='l vortex chain', total_count=100, per_fig=10, seed=42)
+# print("-------------------------------")
 # plot_class_samples(target_class='vortex chain', total_count=100, per_fig=10, seed=42)
+# print("-------------------------------")
+# plot_class_samples(target_class='alfven dis', total_count=100, per_fig=10, seed=42)
+# print("-------------------------------")
+# plot_class_samples(target_class='neither', total_count=100, per_fig=10, seed=42)
 
 
 # %%

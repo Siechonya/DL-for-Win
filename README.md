@@ -47,6 +47,7 @@ Both share the same decoder and loss design. Transformer's self-attention excels
 | `vortex chain` | Chain of magnetic vortices |
 | `c vortex` | Circular polarized vortex |
 | `l vortex` | Linear polarized vortex |
+| `l vortex chain` | Linear Alfvénic vortex chain |
 | `hole` | Magnetic hole |
 | `soliton` | Magnetic soliton |
 | `shock` | Shock / shock-like structure |

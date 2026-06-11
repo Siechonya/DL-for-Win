@@ -266,8 +266,8 @@ def run_batch_predictions(predictor, data_dir, fraction=0.1, seed=42, batch_log=
     return test_data_raw, test_files_list, test_embeddings, predictions_list
 
 # --- 运行批量预测 ---
-# data_dir = os.path.join(workspace, 'testset')
-data_dir = os.path.join(workspace, 'trainset_0415-0530')
+data_dir = os.path.join(workspace, 'testset')
+# data_dir = os.path.join(workspace, 'trainset_20240415-0530')
 
 test_data_raw, test_files, test_embeddings, predictions = run_batch_predictions(
     predictor, data_dir, fraction=1, seed=42
@@ -297,7 +297,7 @@ def verify_top_k_samples(embeddings, data_raw, files, proto_embs_dict,
     for cls_name in target_classes:
         proto_center = proto_embs_dict[cls_name]
         distances = np.linalg.norm(embeddings - proto_center, axis=1)
-        closest_indices = np.argsort(distances)[k*1:k*2]
+        closest_indices = np.argsort(distances)[0:k]
 
         fig, axes = plt.subplots(2, k, figsize=(5 * k, 8))
         fig.suptitle(f'Top {k} Matches for Prototype Class: {cls_name.upper()} (trainset_0415-0530)',
@@ -356,7 +356,7 @@ def verify_top_k_samples(embeddings, data_raw, files, proto_embs_dict,
 verify_top_k_samples(
     embeddings=test_embeddings, data_raw=test_data_raw, files=test_files,
     proto_embs_dict=final_proto_emb, predictions=predictions,
-    target_classes=['sheet', 'hole', 'shock', 'soliton', 'l vortex', 'c vortex', 'vortex chain', 'alfven dis'], k=10
+    target_classes=['sheet', 'hole', 'shock', 'soliton', 'l vortex', 'l vortex chain', 'c vortex', 'vortex chain', 'alfven dis'], k=10
 )
 
 
@@ -366,13 +366,13 @@ import numpy as np
 
 def plot_distance_histograms(test_embeddings, predictions, proto_emb, thresholds, bin_size=0.5, max_dist=10):
     """
-    为每个种类绘制距离分布直方图（2x4 固定布局）
+    为每个种类绘制距离分布直方图（3x3 固定布局）
     """
     unique_classes = [cls for cls in proto_emb.keys() if cls != 'neither']
-    
-    cols = 4
-    rows = 2
-    fig, axes = plt.subplots(rows, cols, figsize=(18, 8))
+
+    cols = 3
+    rows = 3
+    fig, axes = plt.subplots(rows, cols, figsize=(18, 12))
     
     bins = np.arange(0, max_dist + bin_size, bin_size)
 
@@ -447,7 +447,7 @@ test_2d = vecs_2d[:len(test_embeddings)]
 proto_2d = vecs_2d[len(test_embeddings):]
 
 # 3. 颜色映射
-colors_list = ['red', 'blue', 'green', 'orange', 'purple', 'cyan', 'magenta', 'brown']
+colors_list = ['red', 'blue', 'green', 'orange', 'purple', 'cyan', 'magenta', 'brown', 'olive']
 color_map = {cls: colors_list[i % len(colors_list)] for i, cls in enumerate(unique_classes)}
 color_map['neither'] = 'lightgrey'
 
@@ -455,7 +455,7 @@ point_colors = [color_map.get(p, 'lightgrey') for p in predictions]
 
 # 4. 绘图
 plt.figure(figsize=(14, 10))
-plt.scatter(test_2d[:, 0], test_2d[:, 1], c=point_colors, alpha=0.3, s=4, label='Classified Samples')
+plt.scatter(test_2d[:, 0], test_2d[:, 1], c=point_colors, alpha=0.3, s=2, label='Classified Samples')
 
 for i, cls in enumerate(unique_classes):
     plt.scatter(proto_2d[i, 0], proto_2d[i, 1],
@@ -551,13 +551,17 @@ def plot_class_samples(target_class, total_count=100, per_fig=10, seed=42):
 # print("-------------------------------")
 # plot_class_samples(target_class='hole', total_count=100, per_fig=10, seed=42)
 # print("-------------------------------")
-plot_class_samples(target_class='soliton', total_count=100, per_fig=10, seed=42)
+# plot_class_samples(target_class='soliton', total_count=100, per_fig=10, seed=42)
 # print("-------------------------------")
-# plot_class_samples(target_class='c vortex', total_count=100, per_fig=10, seed=42)
+plot_class_samples(target_class='c vortex', total_count=100, per_fig=10, seed=42)
 # print("-------------------------------")
 # plot_class_samples(target_class='l vortex', total_count=100, per_fig=10, seed=42)
 # print("-------------------------------")
+# plot_class_samples(target_class='l vortex chain', total_count=100, per_fig=10, seed=42)
+# print("-------------------------------")
 # plot_class_samples(target_class='vortex chain', total_count=100, per_fig=10, seed=42)
+# print("-------------------------------")
+# plot_class_samples(target_class='alfven dis', total_count=100, per_fig=10, seed=42)
 # print("-------------------------------")
 # plot_class_samples(target_class='neither', total_count=100, per_fig=10, seed=42)
 

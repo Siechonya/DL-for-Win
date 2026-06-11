@@ -40,14 +40,14 @@ def draw_samples(samples_path, cluster, num=None, save=False):
 
     def gau(B, b_z, b_max, b_min, sigma, l, r):
         # 去趋势
-        B = signal.detrend(B)
+        # B = signal.detrend(B)
         # b_z = signal.detrend(b_z)
         # b_max = signal.detrend(b_max)
         # b_min = signal.detrend(b_min)
 
-        b_max = gaussian_filter1d(b_max, sigma=sigma)
+        # b_max = gaussian_filter1d(b_max, sigma=sigma)
         b_min = gaussian_filter1d(b_min, sigma=sigma)
-        # b_z = gaussian_filter1d(b_z, sigma=sigma)
+        b_z = gaussian_filter1d(b_z, sigma=sigma)
         # B = gaussian_filter1d(B, sigma=sigma/5)
 
         # sigma1= sigma/4
@@ -126,7 +126,7 @@ def draw_samples(samples_path, cluster, num=None, save=False):
         df.to_parquet(os.path.join('..\\samples_clean', cluster, num), index=True)
 
 workspace = '..\\'
-draw_samples(os.path.join(workspace, 'samples'), cluster='hole', num='1.parquet', save=True)
+draw_samples(os.path.join(workspace, 'samples'), cluster='l vortex chain', num='4.parquet', save=True)
 # draw_samples(os.path.join(workspace, 'samples_clean'), cluster='shock', num='4.parquet', save=False)    
 
 
@@ -224,6 +224,8 @@ draw_samples(os.path.join(workspace, 'samples_clean'), cluster='hole')
 plt.savefig(os.path.join(workspace, 'samples_clean', 'hole.png'), dpi=150, bbox_inches='tight')
 draw_samples(os.path.join(workspace, 'samples_clean'), cluster='l vortex')
 plt.savefig(os.path.join(workspace, 'samples_clean', 'l vortex.png'), dpi=150, bbox_inches='tight')
+draw_samples(os.path.join(workspace, 'samples_clean'), cluster='l vortex chain')
+plt.savefig(os.path.join(workspace, 'samples_clean', 'l vortex chain.png'), dpi=150, bbox_inches='tight')
 draw_samples(os.path.join(workspace, 'samples_clean'), cluster='sheet')
 plt.savefig(os.path.join(workspace, 'samples_clean', 'sheet.png'), dpi=150, bbox_inches='tight')
 draw_samples(os.path.join(workspace, 'samples_clean'), cluster='shock')
@@ -352,7 +354,7 @@ def draw_samples_with_derivatives(samples_path, cluster):
 # --- 运行绘图 ---
 workspace = '..\\'
 samples_base_path = os.path.join(workspace, 'samples_clean')
-clusters = ['c vortex', 'hole', 'l vortex', 'sheet', 'shock', 'soliton', 'vortex chain', 'alfven dis']
+clusters = ['c vortex', 'hole', 'l vortex', 'l vortex chain', 'sheet', 'shock', 'soliton', 'vortex chain', 'alfven dis']
 
 for target_cluster in clusters:
     draw_samples_with_derivatives(samples_base_path, cluster=target_cluster)
@@ -695,7 +697,7 @@ def normalize_sequence(seq):
     return np.column_stack([B_norm, perturb_norm])
 def analyze_prototype_features(samples_path, device='cpu'):
     # clusters = ['sheet', 'vortex chain', 'c vortex', 'l vortex', 'hole', 'soliton', 'shock', '_shock', '_sheet']
-    clusters = ['sheet', 'vortex chain', 'c vortex', 'l vortex', 'hole', 'soliton', 'shock', 'alfven dis']
+    clusters = ['sheet', 'vortex chain', 'c vortex', 'l vortex', 'l vortex chain', 'hole', 'soliton', 'shock', 'alfven dis']
     all_stats = []
 
     for cluster in clusters:
@@ -827,7 +829,7 @@ if __name__ == "__main__":
     # 设置路径
     workspace = '..\\'
     cluster = 'vortex chain'
-    directory = os.path.join(workspace, 'trainset_20240401-0414')
+    directory = os.path.join(workspace, 'samples/l vortex chain')
     # directory = os.path.join(workspace, f'samples\\{cluster}')
     convert_csv_to_parquet(directory)
     # directory = os.path.join(workspace, f'samples_clean\\{cluster}')

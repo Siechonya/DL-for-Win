@@ -758,7 +758,7 @@ test_data_raw = data_all_raw[train_size+val_size:]
 test_files = data_all_files[train_size+val_size:]
 
 # --- 3. 加载并增强范本 (Prototypes) ---
-classes = ['sheet', 'vortex chain', 'c vortex', 'l vortex', 'hole', 'soliton', 'shock', 'alfven dis']
+classes = ['sheet', 'vortex chain', 'c vortex', 'l vortex', 'l vortex chain', 'hole', 'soliton', 'shock', 'alfven dis']
 prototypes_processed_raw = {}
 for cls in classes:
     cls_path = os.path.join(samples_path, cls)
@@ -809,7 +809,7 @@ feat_weights = torch.tensor([1., 1., 1., 1., 1., 1., 1., 1., 1., 1., 1., 1., 1.,
 
 train_loss_list, val_loss_list, all_train_loss_list, all_val_loss_list = train_autoencoder(
     model, train_dataloader, val_dataloader, proto_dataloader, device,
-    epochs=100, lr=0.005, patience=10, max_lambda_contrastive=0.05, step_lambda_contrastive=0, start_lambda_contrastive=0.05, max_shift=50,
+    epochs=100, lr=0.005, patience=20, max_lambda_contrastive=0.05, step_lambda_contrastive=0, start_lambda_contrastive=0.05, max_shift=50,
     feat_weights=feat_weights
 )
 
@@ -884,7 +884,7 @@ plt.show()
 from scipy.spatial.distance import cdist, pdist, squareform
 from torch.utils.data import DataLoader, TensorDataset
 
-def test_clustering(model, test_data_preprocessed, prototypes_preprocessed_dict, device, n_std=2.0, batch_size=256):
+def test_clustering(model, test_data_preprocessed, prototypes_preprocessed_dict, device, n_std=2.0, batch_size=256, robust=False):
     """
     自适应聚类测试逻辑：
     1. 提取范本中心
@@ -932,18 +932,24 @@ def test_clustering(model, test_data_preprocessed, prototypes_preprocessed_dict,
 
     # --- 4. 基于每一类测试样本的分布计算阈值 ---
     class_thresholds = {}
+    if robust:
+        header = f"{'Class':<15} | {'Median':<10} | {'MAD':<10} | {'Threshold':<10}"
+    else:
+        header = f"{'Class':<15} | {'Test_Mean':<10} | {'Test_Std':<10} | {'Threshold':<10}"
     print("\n" + "-" * 55)
-    print(f"{'Class':<15} | {'Test_Mean':<10} | {'Test_Std':<10} | {'Threshold':<10}")
+    print(header)
     print("-" * 55)
 
     for i, cls in enumerate(class_names):
-        # 找出所有初步归为该类的测试样本距离
         this_class_dists = all_nearest_dists[initial_idx == i]
-        
+
         if len(this_class_dists) > 0:
-            m = np.mean(this_class_dists)
-            s = np.std(this_class_dists)
-            # 计算该类的专属阈值：基于测试集表现
+            if robust:
+                m = np.median(this_class_dists)
+                s = np.median(np.abs(this_class_dists - m)) * 1.4826  # MAD → σ
+            else:
+                m = np.mean(this_class_dists)
+                s = np.std(this_class_dists)
             t = m + n_std * s
             class_thresholds[cls] = t
             print(f"{cls:<15} | {m:<10.4f} | {s:<10.4f} | {t:<10.4f}")
@@ -977,7 +983,7 @@ def test_clustering(model, test_data_preprocessed, prototypes_preprocessed_dict,
 
 # %%
 model = model.to(device)
-predictions, final_proto_emb, thresholds = test_clustering(model, X_test_pad, prototypes_pad, device, n_std=1) # 加方差会不准
+predictions, final_proto_emb, thresholds = test_clustering(model, X_test_pad, prototypes_pad, device, n_std=1, robust=True)  # robust=True: 中位数+MAD 抗离群
 torch.save(model.state_dict(), os.path.join(workspace, 'bi_model.pth')) 
 np.save(os.path.join(workspace, 'proto_emb.npy'), final_proto_emb) 
 np.save(os.path.join(workspace, 'target_pts.npy'), np.array([target_pts]))
@@ -1051,7 +1057,7 @@ def plot_tsne(model, test_loader, prototypes_pad, predictions, device):
     
     # --- 3. 建立颜色映射表 ---
     # 定义类别颜色
-    colors_list = ['red', 'blue', 'green', 'orange', 'purple', 'cyan', 'magenta']
+    colors_list = ['red', 'blue', 'green', 'orange', 'purple', 'cyan', 'magenta', 'brown', 'olive']
     color_map = {cls: colors_list[i % len(colors_list)] for i, cls in enumerate(unique_protos)}
     color_map['neither'] = 'lightgrey' # 没认出来的设为灰色
 
@@ -1361,7 +1367,7 @@ plot_distance_histograms(
     test_embeddings=test_embs, 
     predictions=predictions, 
     proto_emb=final_proto_emb, 
-    bin_size=0.5,   # 分辨率
+    bin_size=0.1,   # 分辨率
     max_dist=20     # 最大显示距离
 )
 
