@@ -784,7 +784,9 @@ val_dataloader = DataLoader(val_dataset, batch_size=128, shuffle=True, pin_memor
 proto_dataloader = DataLoader(proto_dataset, batch_size=128, shuffle=True, pin_memory=False)
 
 # --- 6. 训练 ---
-torch.manual_seed(42)  # 固定随机种子, 保证结果可复现
+torch.manual_seed(42)  # 固定随机种子
+torch.backends.cudnn.deterministic = True  # 强制 cuDNN 确定性, 保证可复现
+torch.backends.cudnn.benchmark = False     # 关闭自动调优, 避免非确定行为
 model = BiAutoencoder(input_size=4, cnn_channels=16, hidden_size=128, num_layers=2, latent_dim=64).to(device)
 print(f"Starting Autoencoder training on {device}...")
 torch.cuda.empty_cache()
@@ -965,13 +967,116 @@ def test_clustering(model, test_data_preprocessed, prototypes_preprocessed_dict,
     return final_predictions, proto_emb, class_thresholds
 
 
+# %% [markdown]
+# ### 阈值校准：用 train+val (63k) 计算原型中心和各类阈值
+
 # %%
+def calibrate_thresholds(model, data_preprocessed, prototypes_preprocessed_dict, device,
+                         n_std=1.0, batch_size=256, robust=True):
+    """用大数据集 (train+val) 计算原型中心和各类阈值, 返回 proto_embs, class_thresholds"""
+    model.eval()
+
+    proto_embs = {}
+    class_names = list(prototypes_preprocessed_dict.keys())
+    for cls in class_names:
+        data_matrix = prototypes_preprocessed_dict[cls]
+        with torch.no_grad():
+            seq_tensor = torch.tensor(np.array(data_matrix), dtype=torch.float32).to(device)
+            embs = model.encode(seq_tensor).cpu().numpy()
+            proto_embs[cls] = np.mean(embs, axis=0)
+
+    print(f"Extracting calibration embeddings (N={len(data_preprocessed)})...")
+    tensor = torch.tensor(np.array(data_preprocessed), dtype=torch.float32)
+    loader = DataLoader(TensorDataset(tensor), batch_size=batch_size, shuffle=False)
+    embs = []
+    with torch.no_grad():
+        for (batch,) in loader:
+            embs.append(model.encode(batch.to(device)).cpu().numpy())
+    embs = np.vstack(embs)
+
+    centers = np.array([proto_embs[cls] for cls in class_names])
+    dist_matrix = cdist(embs, centers, metric='euclidean')
+    initial_idx = np.argmin(dist_matrix, axis=1)
+    all_nearest_dists = np.min(dist_matrix, axis=1)
+
+    class_thresholds = {}
+    print("\n" + "-" * 55)
+    print(f"{'Class':<15} | {'Median':<10} | {'MAD':<10} | {'Threshold':<10}")
+    print("-" * 55)
+    for i, cls in enumerate(class_names):
+        this_class_dists = all_nearest_dists[initial_idx == i]
+        if len(this_class_dists) > 0:
+            if robust:
+                m = np.median(this_class_dists)
+                s = np.median(np.abs(this_class_dists - m)) * 1.4826
+            else:
+                m = np.mean(this_class_dists)
+                s = np.std(this_class_dists)
+            t = m + n_std * s
+            class_thresholds[cls] = t
+            print(f"{cls:<15} | {m:<10.4f} | {s:<10.4f} | {t:<10.4f}")
+        else:
+            class_thresholds[cls] = 0.0
+            print(f"{cls:<15} | No samples assigned.")
+
+    print("\n" + "-" * 35)
+    print("Prototype Centers Distance Matrix:")
+    dist_matrix_centers = squareform(pdist(centers, metric='euclidean'))
+    dist_df = pd.DataFrame(dist_matrix_centers, index=class_names, columns=class_names)
+    print(dist_df.round(2))
+    print("-" * 35 + "\n")
+
+    return proto_embs, class_thresholds
+
+
 model = model.to(device)
-predictions, final_proto_emb, thresholds = test_clustering(model, X_test_pad, prototypes_pad, device, n_std=1) # 加方差会不准
-torch.save(model.state_dict(), os.path.join(workspace, 'bi_model.pth')) 
-np.save(os.path.join(workspace, 'proto_emb.npy'), final_proto_emb) 
+X_calib_pad = np.vstack([X_train_pad, X_val_pad])
+print(f"Calibration set: {len(X_calib_pad)} samples (train+val)")
+
+final_proto_emb, thresholds = calibrate_thresholds(
+    model, X_calib_pad, prototypes_pad, device, n_std=1, robust=True
+)
+torch.save(model.state_dict(), os.path.join(workspace, 'bi_model.pth'))
+np.save(os.path.join(workspace, 'proto_emb.npy'), final_proto_emb)
 np.save(os.path.join(workspace, 'target_pts.npy'), np.array([target_pts]))
 np.save(os.path.join(workspace, 'thresholds.npy'), thresholds)
+
+
+# %% [markdown]
+# ### 测试集评估：用校准好的阈值对 test set (7k) 分类
+
+# %%
+def classify_with_thresholds(model, test_data_preprocessed, proto_embs, thresholds, device, batch_size=256):
+    """用已校准的 proto_embs + thresholds 对测试集分类"""
+    model.eval()
+    class_names = list(proto_embs.keys())
+    centers = np.array([proto_embs[cls] for cls in class_names])
+
+    test_tensor = torch.tensor(np.array(test_data_preprocessed), dtype=torch.float32)
+    test_loader = DataLoader(TensorDataset(test_tensor), batch_size=batch_size, shuffle=False)
+    test_embs = []
+    with torch.no_grad():
+        for (batch,) in test_loader:
+            test_embs.append(model.encode(batch.to(device)).cpu().numpy())
+    test_embs = np.vstack(test_embs)
+
+    dist_matrix = cdist(test_embs, centers, metric='euclidean')
+    initial_idx = np.argmin(dist_matrix, axis=1)
+    all_nearest_dists = np.min(dist_matrix, axis=1)
+
+    predictions = []
+    for i in range(len(test_embs)):
+        best_cls = class_names[initial_idx[i]]
+        if all_nearest_dists[i] <= thresholds.get(best_cls, 0.0):
+            predictions.append(best_cls)
+        else:
+            predictions.append('neither')
+    return predictions
+
+
+predictions = classify_with_thresholds(
+    model, X_test_pad, final_proto_emb, thresholds, device
+)
 
 # 保存输出到 output/train_result/{timestamp}/
 result_dir = os.path.join(workspace, 'output', 'train_result', timestamp)
@@ -992,7 +1097,6 @@ print(f"Total Samples: {total}")
 lines.append("-" * 35)
 lines.append(f"Total Samples: {total}")
 
-# 写入文件
 result_path = os.path.join(result_dir, 'classification.txt')
 with open(result_path, 'w', encoding='utf-8') as f:
     f.write('\n'.join(lines))

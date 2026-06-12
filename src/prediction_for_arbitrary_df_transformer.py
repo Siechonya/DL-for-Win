@@ -217,7 +217,7 @@ import random
 from tqdm import tqdm
 import torch
 
-def run_batch_predictions(predictor, data_dir, fraction=0.1, seed=42, batch_log=200, clear_cache_every=500):
+def run_batch_predictions(predictor, data_dir, fraction=0.1, seed=42, batch_log=200, clear_cache_every=100):
     """
     从 data_dir 随机抽取 fraction 比例的 parquet 文件做预测（带进度条）。
     返回 test_data_raw, test_files, test_embeddings, predictions
@@ -297,7 +297,7 @@ def verify_top_k_samples(embeddings, data_raw, files, proto_embs_dict,
     for cls_name in target_classes:
         proto_center = proto_embs_dict[cls_name]
         distances = np.linalg.norm(embeddings - proto_center, axis=1)
-        closest_indices = np.argsort(distances)[0:k]
+        closest_indices = np.argsort(distances)[k*4:k*4+k]
 
         fig, axes = plt.subplots(2, k, figsize=(5 * k, 8))
         fig.suptitle(f'Top {k} Matches for Prototype Class: {cls_name.upper()} (trainset_0415-0530)',
@@ -553,11 +553,11 @@ def plot_class_samples(target_class, total_count=100, per_fig=10, seed=42):
 # print("-------------------------------")
 # plot_class_samples(target_class='soliton', total_count=100, per_fig=10, seed=42)
 # print("-------------------------------")
-plot_class_samples(target_class='c vortex', total_count=100, per_fig=10, seed=42)
+# plot_class_samples(target_class='c vortex', total_count=100, per_fig=10, seed=42)
 # print("-------------------------------")
 # plot_class_samples(target_class='l vortex', total_count=100, per_fig=10, seed=42)
 # print("-------------------------------")
-# plot_class_samples(target_class='l vortex chain', total_count=100, per_fig=10, seed=42)
+plot_class_samples(target_class='l vortex chain', total_count=100, per_fig=10, seed=42)
 # print("-------------------------------")
 # plot_class_samples(target_class='vortex chain', total_count=100, per_fig=10, seed=42)
 # print("-------------------------------")
