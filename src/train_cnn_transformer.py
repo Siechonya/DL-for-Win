@@ -988,8 +988,24 @@ def test_clustering(model, test_data_preprocessed, prototypes_preprocessed_dict,
 
 # %%
 def calibrate_thresholds(model, data_preprocessed, prototypes_preprocessed_dict, device,
-                         n_std=1.0, batch_size=256, robust=True):
-    """用大数据集 (train+val) 计算原型中心和各类阈值, 返回 proto_embs, class_thresholds"""
+                         n_std=1.0, batch_size=256, robust=True,
+                         margin_quantile=0.5, threshold_quantile=0.8,
+                         min_calibration_samples=20):
+    """用大数据集 (train+val) 计算原型中心和各类阈值。
+
+    Args:
+        n_std: 倍率，仅当 threshold_quantile=None 时生效。
+        robust: True=median+MAD*1.4826，False=mean+std；仅当 threshold_quantile=None 时生效。
+        margin_quantile: 高置信样本的 margin 分位数阈值 (margin = dist2nd - dist1st)，
+                         保留 margin >= 此分位数的样本。
+        threshold_quantile: 非 None 时直接用 confident_dists 的此分位数作为阈值；
+                            None 时回退到 robust (median+MAD) 或 classical (mean+std)。
+        min_calibration_samples: 高置信样本数不足此值时回退到全部分配样本。
+
+    Returns:
+        proto_embs: dict[class_name -> center_vector (64,)]
+        class_thresholds: dict[class_name -> float]
+    """
     model.eval()
 
     # 1. 原型中心
@@ -1017,23 +1033,54 @@ def calibrate_thresholds(model, data_preprocessed, prototypes_preprocessed_dict,
     dist_matrix = cdist(embs, centers, metric='euclidean')
     initial_idx = np.argmin(dist_matrix, axis=1)
     all_nearest_dists = np.min(dist_matrix, axis=1)
+    sorted_dists = np.sort(dist_matrix, axis=1)
+    nearest_margin = sorted_dists[:, 1] - sorted_dists[:, 0]
 
     class_thresholds = {}
-    print("\n" + "-" * 55)
-    print(f"{'Class':<15} | {'Median':<10} | {'MAD':<10} | {'Threshold':<10}")
-    print("-" * 55)
+    print("\n" + "-" * 90)
+    if threshold_quantile is not None:
+        q_label = f"Q{threshold_quantile*100:.0f}"
+        stat_hdr = f"{q_label:<10} | {'Threshold':<10}"
+    else:
+        stat_hdr = f"{'Median':<10} | {'Scale':<10} | {'Threshold':<10}"
+    print(f"{'Class':<15} | {'N':<6} | {'N conf':<6} | {'Margin':<10} | {stat_hdr}")
+    print("-" * 90)
     for i, cls in enumerate(class_names):
-        this_class_dists = all_nearest_dists[initial_idx == i]
+        class_mask = initial_idx == i
+        this_class_dists = all_nearest_dists[class_mask]
         if len(this_class_dists) > 0:
-            if robust:
-                m = np.median(this_class_dists)
-                s = np.median(np.abs(this_class_dists - m)) * 1.4826
+            class_margins = nearest_margin[class_mask]
+            margin_cut = np.quantile(class_margins, margin_quantile)
+            confident_dists = this_class_dists[class_margins >= margin_cut]
+            if len(confident_dists) < min_calibration_samples:
+                confident_dists = this_class_dists
+                margin_cut = 0.0
+
+            if threshold_quantile is not None:
+                t = np.quantile(confident_dists, threshold_quantile)
+                m = np.median(confident_dists)
+                s = np.median(np.abs(confident_dists - m)) * 1.4826
+            elif robust:
+                m = np.median(confident_dists)
+                s = np.median(np.abs(confident_dists - m)) * 1.4826
+                t = m + n_std * s
             else:
-                m = np.mean(this_class_dists)
-                s = np.std(this_class_dists)
-            t = m + n_std * s
+                m = np.mean(confident_dists)
+                s = np.std(confident_dists)
+                t = m + n_std * s
             class_thresholds[cls] = t
-            print(f"{cls:<15} | {m:<10.4f} | {s:<10.4f} | {t:<10.4f}")
+            n_total = len(this_class_dists)
+            n_conf = len(confident_dists)
+            if threshold_quantile is not None:
+                print(
+                    f"{cls:<15} | {n_total:<6} | {n_conf:<6} | "
+                    f"{margin_cut:<10.4f} | {t:<10.4f} | {t:<10.4f}"
+                )
+            else:
+                print(
+                    f"{cls:<15} | {n_total:<6} | {n_conf:<6} | "
+                    f"{margin_cut:<10.4f} | {m:<10.4f} | {s:<10.4f} | {t:<10.4f}"
+                )
         else:
             class_thresholds[cls] = 0.0
             print(f"{cls:<15} | No samples assigned.")
@@ -1055,7 +1102,8 @@ X_calib_pad = np.vstack([X_train_pad, X_val_pad])
 print(f"Calibration set: {len(X_calib_pad)} samples (train+val)")
 
 final_proto_emb, thresholds = calibrate_thresholds(
-    model, X_calib_pad, prototypes_pad, device, n_std=1, robust=True
+    model, X_calib_pad, prototypes_pad, device, n_std=1, robust=True,
+    margin_quantile=0.5, threshold_quantile=0.8
 )
 torch.save(model.state_dict(), os.path.join(workspace, 'bi_model.pth'))
 np.save(os.path.join(workspace, 'proto_emb.npy'), final_proto_emb)

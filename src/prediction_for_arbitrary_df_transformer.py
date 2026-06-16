@@ -297,7 +297,7 @@ def verify_top_k_samples(embeddings, data_raw, files, proto_embs_dict,
     for cls_name in target_classes:
         proto_center = proto_embs_dict[cls_name]
         distances = np.linalg.norm(embeddings - proto_center, axis=1)
-        closest_indices = np.argsort(distances)[k*4:k*4+k]
+        closest_indices = np.argsort(distances)[:k]
 
         fig, axes = plt.subplots(2, k, figsize=(5 * k, 8))
         fig.suptitle(f'Top {k} Matches for Prototype Class: {cls_name.upper()} (trainset_0415-0530)',
