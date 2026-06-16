@@ -14,7 +14,7 @@ All code lives in Jupyter notebooks. There is no `setup.py`, `requirements.txt`,
 
 ## Key notebooks
 
-- **`src/train.ipynb`** — Main training pipeline (Bi-LSTM encoder). Defines `load_data`, model, loss functions, `test_clustering`, training loop, t-SNE, and all visualization cells. Run top-to-bottom.
+- **`src/train.ipynb`** — Main training pipeline (Bi-LSTM encoder). Defines `load_data`, model, loss functions, `calibrate_thresholds`, `classify_with_thresholds`, `test_clustering` (legacy), training loop, t-SNE, and all visualization cells. Run top-to-bottom.
 - **`src/train_cnn_transformer.ipynb`** — Transformer encoder variant. Same pipeline as `train.ipynb` but replaces Bi-LSTM encoder with 3-layer Transformer (self-attention). Better at global structure comparison (shock vs soliton), slightly slower per epoch.
 - **`src/prediction_for_arbitrary_df.ipynb`** — Loads Bi-LSTM trained weights and runs inference on new data. Self-contained: defines `BiAutoencoder` class + `PhysicalPredictor`.
 - **`src/prediction_for_arbitrary_df_transformer.ipynb`** — Same as above but for Transformer-trained weights. Defines `CnnTransformerAutoencoder` class.
@@ -27,8 +27,10 @@ All code lives in Jupyter notebooks. There is no `setup.py`, `requirements.txt`,
 - **`max_shift=50` in `calc_invariant_mse`**: Intentional large tolerance for translation+reflection invariance (structures aren't centered in the time window).
 - **Two encoder architectures available**: Bi-LSTM (recurrent, good at local phase/pattern) and Transformer (self-attention, good at global comparison like shock detection). Decoder stays Bi-LSTM in both.
 - **Physical features**: 18 features computed by `extract_physical_features_batch` (see table below). Gating masks (`mask_alfven` / `mask_comp`) zero out irrelevant features per structure type. Features are z-score normalized inside `physical_contrastive_loss` and used for pair-masking via similarity thresholds (<0.8 similar, >4.0 dissimilar).
-- **Classification**: Prototype-center nearest-neighbor with per-class dynamic thresholds (`mean + n_std * std`). Unknown/noise samples assigned `'neither'` if distance exceeds threshold.
-- **Training data**: ~70k parquet files from `trainset/` (2023–2024, 2 days selected per month). Much more diverse than the original Jan-2024-only dataset (~49k files). Loss values are NOT comparable between old and new datasets. Only prototypes (31 raw × 2 augmented = 62) have labels. Training samples are unlabeled (`labels = -1` in contrastive loss).
+- **Classification**: Prototype-center nearest-neighbor with per-class adaptive thresholds. Thresholds are calibrated by `calibrate_thresholds` (separate function) using robust median + MAD×1.4826 (default `n_std=1`, `robust=True`) on train+val data — more resistant to outliers than mean+std. Unknown/noise samples assigned `'neither'` if distance exceeds threshold.
+- **Determinism**: `torch.manual_seed(42)` + `torch.backends.cudnn.deterministic = True` before training. Also `random.seed(42)` during data splitting. Ensures reproducible results across runs.
+- **Scheduler**: `ReduceLROnPlateau(optimizer, 'min', factor=0.5, patience=2, min_lr=1e-4)`. LR starts at 0.005, halves every 2 epochs without val loss improvement.
+- **Training data**: ~70k parquet files from `trainset/` (2023–2024, 2 days selected per month). Much more diverse than the original Jan-2024-only dataset (~49k files). Loss values are NOT comparable between old and new datasets. Only prototypes (39 raw × 2 augmented = 78) have labels. Training samples are unlabeled (`labels = -1` in contrastive loss).
 - **Output images**: All outputs from one training run go to `output/images/{timestamp}/` (loss curves, t-SNE). Loss CSV export removed — evaluation uses saved images.
 - **Test data has no labels** — evaluation is qualitative (t-SNE, random waveform inspection via `plot_class_samples`, distance histograms).
 - **`plot_class_samples`** in prediction notebook: Random sampling with fixed `seed=42` for reproducible manual verification. Signature: `plot_class_samples(target_class, total_count=100, per_fig=10, seed=42)`.
@@ -110,7 +112,7 @@ The jupytext executable is `D:\Anaconda\envs\jupytext\python.exe -m jupytext`.
 
 2. **After editing `.py`, sync to `.ipynb`**: `& 'D:\Anaconda\envs\jupytext\python.exe' -m jupytext --sync src\<file>.py`
 
-3. **When things go wrong**: `git checkout -- <file>` to restore from the last commit. The repo is at commit `c406543` ("Revert global phys_feat_std normalization") pushed to remote. All local uncommitted changes are experimental.
+3. **When things go wrong**: `git checkout -- <file>` to restore from the last committed state. Use `git log --oneline -5` to find the most recent stable commit.
 
 ### Legacy: direct `.ipynb` editing (only when `.py` is unavailable)
 
